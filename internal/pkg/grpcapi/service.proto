@@ -1,0 +1,26 @@
+syntax = "proto3";
+package proto;
+option go_package = "github.com/chirino/hsvcproxy/internal/pkg/grpcapi;grpcapi";
+
+message ServiceAddress {
+  string serviceName = 1;
+}
+
+message ConnectionAddress {
+  int32 serverId = 1;
+  int64 connectionId = 2;
+}
+
+message Chunk  {
+  bytes data = 1;
+}
+
+message ConnectionAddressAndChunk  {
+  ConnectionAddress address = 1;
+  bytes data = 2;
+}
+
+service RemoteHost {
+  rpc Listen(ServiceAddress) returns (stream ConnectionAddress) {}
+  rpc AcceptConnection(stream ConnectionAddressAndChunk) returns (stream Chunk) {}
+}
