@@ -2,7 +2,7 @@ package utils_test
 
 import (
 	"fmt"
-	"github.com/chirino/hsvcproxy/internal/pkg/utils"
+	"github.com/chirino/rtsvc/internal/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

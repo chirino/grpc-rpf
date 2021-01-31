@@ -3,7 +3,7 @@ package importer
 import (
 	"context"
 	"fmt"
-	"github.com/chirino/hsvcproxy/internal/pkg/grpcapi"
+	"github.com/chirino/rtsvc/internal/pkg/grpcapi"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -23,12 +23,17 @@ func init() {
 	log = _log.New(os.Stderr, "importer: ", 0)
 }
 
+type ServiceConfig struct {
+	Name   string
+	Listen string
+}
+
 type Config struct {
-	Services map[string]net.Listener
+	Services map[string]ServiceConfig
 	grpcapi.TLSConfig
 }
 
-func New(config Config) (*grpc.Server, error) {
+func New(config Config) (*server, error) {
 	opts, err := grpcapi.NewServerOptions(config.TLSConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "invalid GRPC server configuration")
@@ -36,23 +41,18 @@ func New(config Config) (*grpc.Server, error) {
 
 	grpcServer := grpc.NewServer(opts...)
 	s := &server{
+		Server:             grpcServer,
 		services:           map[string]*serviceListener{},
 		pendingConnections: map[int64]net.Conn{},
 		id:                 rand.Int31(),
 	}
-
-	for name, l := range config.Services {
-		s.services[name] = &serviceListener{
-			name:     name,
-			listener: l,
-		}
-	}
-
 	grpcapi.RegisterRemoteHostServer(grpcServer, s)
-	return grpcServer, nil
+
+	return s, nil
 }
 
 type server struct {
+	*grpc.Server
 	services           map[string]*serviceListener
 	id                 int32
 	lastConnectionId   int64
@@ -64,6 +64,35 @@ type serviceListener struct {
 	name     string
 	listener net.Listener
 	mu       sync.Mutex
+	config   ServiceConfig
+}
+
+func (s *server) setServices(services map[string]ServiceConfig) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for name, config := range services {
+
+		// Is it a new service...
+		if s.services[name] == nil {
+
+			l, err := net.Listen("tcp", config.Listen)
+			if err != nil {
+				log.Println("Could not listen ")
+			}
+
+			s.services[name] = &serviceListener{
+				name:     name,
+				config:   config,
+				listener: l,
+			}
+		} else {
+
+			// Did the service config change?
+		}
+
+	}
+
 }
 
 func (s *server) registerConnection(conn net.Conn) int64 {

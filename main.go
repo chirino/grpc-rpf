@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/chirino/hsvcproxy/internal/cmd/app"
+	"github.com/chirino/rtsvc/internal/cmd/app"
 	"math/rand"
 	"time"
 )

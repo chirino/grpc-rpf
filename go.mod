@@ -1,9 +1,10 @@
-module github.com/chirino/hsvcproxy
+module github.com/chirino/rtsvc
 
 go 1.15
 
 require (
 	github.com/Shyp/generate-tls-cert v0.0.0-20180217183001-cd913b339294 // indirect
+	github.com/bep/debounce v1.2.0 // indirect
 	github.com/chirino/hawtgo v0.0.1
 	github.com/golang/protobuf v1.4.3
 	github.com/pkg/errors v0.8.1

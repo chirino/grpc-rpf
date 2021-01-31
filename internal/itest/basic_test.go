@@ -4,9 +4,9 @@ package itest
 import (
 	"bufio"
 	"context"
-	"github.com/chirino/hsvcproxy/internal/pkg/exporter"
-	"github.com/chirino/hsvcproxy/internal/pkg/grpcapi"
-	"github.com/chirino/hsvcproxy/internal/pkg/importer"
+	"github.com/chirino/rtsvc/internal/pkg/exporter"
+	"github.com/chirino/rtsvc/internal/pkg/grpcapi"
+	"github.com/chirino/rtsvc/internal/pkg/importer"
 	"github.com/stretchr/testify/assert"
 	"io"
 	"net"
