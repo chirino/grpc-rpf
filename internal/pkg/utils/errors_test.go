@@ -2,7 +2,7 @@ package utils_test
 
 import (
 	"fmt"
-	"github.com/chirino/rtsvc/internal/pkg/utils"
+	"github.com/chirino/grpc-rpf/internal/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

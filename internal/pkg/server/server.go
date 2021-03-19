@@ -1,36 +1,31 @@
-package importer
+package server
 
 import (
 	"context"
 	"fmt"
-	"github.com/chirino/rtsvc/internal/pkg/grpcapi"
+	"github.com/chirino/grpc-rpf/internal/pkg/grpcapi"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"io"
-	_log "log"
+	"io/ioutil"
+	"log"
 	"math/rand"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 )
 
-var log *_log.Logger
-
-func init() {
-	log = _log.New(os.Stderr, "importer: ", 0)
-}
-
 type ServiceConfig struct {
-	Name   string
-	Listen string
+	Listen   string
+	Listener net.Listener
 }
 
 type Config struct {
 	Services map[string]ServiceConfig
 	grpcapi.TLSConfig
+	Log *log.Logger
 }
 
 func New(config Config) (*server, error) {
@@ -45,9 +40,13 @@ func New(config Config) (*server, error) {
 		services:           map[string]*serviceListener{},
 		pendingConnections: map[int64]net.Conn{},
 		id:                 rand.Int31(),
+		log:                config.Log,
 	}
+	if s.log == nil {
+		s.log = log.New(ioutil.Discard, "", 0)
+	}
+	s.setServices(config.Services)
 	grpcapi.RegisterRemoteHostServer(grpcServer, s)
-
 	return s, nil
 }
 
@@ -58,41 +57,60 @@ type server struct {
 	lastConnectionId   int64
 	pendingConnections map[int64]net.Conn
 	mu                 sync.Mutex
+	log                *log.Logger
 }
 
 type serviceListener struct {
-	name     string
-	listener net.Listener
-	mu       sync.Mutex
-	config   ServiceConfig
+	name        string
+	listener    net.Listener
+	mu          sync.Mutex
+	config      ServiceConfig
+	closeOnStop bool
 }
 
-func (s *server) setServices(services map[string]ServiceConfig) int64 {
+func (s *server) setServices(services map[string]ServiceConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for name, config := range services {
 
 		// Is it a new service...
-		if s.services[name] == nil {
-
-			l, err := net.Listen("tcp", config.Listen)
-			if err != nil {
-				log.Println("Could not listen ")
-			}
-
-			s.services[name] = &serviceListener{
-				name:     name,
-				config:   config,
-				listener: l,
+		sl := s.services[name]
+		if sl == nil {
+			sl = &serviceListener{
+				name:        name,
+				config:      config,
+				listener:    config.Listener,
+				closeOnStop: false,
 			}
 		} else {
-
-			// Did the service config change?
+			if sl.closeOnStop && sl.config.Listen != config.Listen {
+				sl.listener.Close()
+				sl.closeOnStop = false
+				sl.listener = config.Listener
+			}
 		}
 
+		if sl.listener == nil {
+			var err error
+			sl.listener, err = net.Listen("tcp", config.Listen)
+			if err != nil {
+				log.Println("Could not listen:", err)
+				continue
+			}
+			sl.closeOnStop = true
+		}
+		s.services[name] = sl
 	}
+}
 
+func (s *server) Stop() {
+	s.Server.Stop()
+	for _, s := range s.services {
+		if s.closeOnStop {
+			s.listener.Close()
+		}
+	}
 }
 
 func (s *server) registerConnection(conn net.Conn) int64 {
@@ -149,6 +167,7 @@ func (s *server) Listen(address *grpcapi.ServiceAddress, listenServer grpcapi.Re
 func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConnectionServer) error {
 
 	ctx, cancel := context.WithCancel(grpcConnnection.Context())
+	defer cancel()
 
 	msg, err := grpcConnnection.Recv()
 	if err != nil {

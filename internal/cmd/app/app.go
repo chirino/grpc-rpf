@@ -8,8 +8,8 @@ import (
 
 var (
 	Command = &cobra.Command{
-		Use:   "hsvcproxy",
-		Short: "The Hybrid Service Proxy command line tool",
+		Use:   "grpc-rpf",
+		Short: "GRPC Remote Port Forward",
 	}
 	DevMode = false
 )
@@ -18,8 +18,7 @@ func init() {
 	Command.PersistentFlags().BoolVar(&DevMode, "dev-mode", false, "run in development mode. increases output verbosity.")
 }
 
-
-func HandleErrorWithExitCode(function func () error, code int) {
+func HandleErrorWithExitCode(function func() error, code int) {
 	if err := function(); err != nil {
 		if DevMode {
 			fmt.Printf("%+v", err)

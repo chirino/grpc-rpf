@@ -1,6 +1,6 @@
 syntax = "proto3";
 package proto;
-option go_package = "github.com/chirino/rtsvc/internal/pkg/grpcapi;grpcapi";
+option go_package = "github.com/chirino/grpc-rpf/internal/pkg/grpcapi;grpcapi";
 
 message ServiceAddress {
   string serviceName = 1;

@@ -4,9 +4,9 @@ package itest
 import (
 	"bufio"
 	"context"
-	"github.com/chirino/rtsvc/internal/pkg/exporter"
-	"github.com/chirino/rtsvc/internal/pkg/grpcapi"
-	"github.com/chirino/rtsvc/internal/pkg/importer"
+	"github.com/chirino/grpc-rpf/internal/pkg/client"
+	"github.com/chirino/grpc-rpf/internal/pkg/grpcapi"
+	"github.com/chirino/grpc-rpf/internal/pkg/server"
 	"github.com/stretchr/testify/assert"
 	"io"
 	"net"
@@ -89,8 +89,10 @@ func runServicesFor(t testing.TB, ctx context.Context, then func(l net.Listener)
 	defer portB.Close()
 	// Start the importer service port.
 	//log.Println("echo service proxy is running at", portB.Addr())
-	importerPort, stopImporter := startImporter(t, ctx, map[string]net.Listener{
-		"echo": portB,
+	importerPort, stopImporter := startImporter(t, ctx, map[string]server.ServiceConfig{
+		"echo": server.ServiceConfig{
+			Listener: portB,
+		},
 	})
 	defer importerPort.Close()
 	defer stopImporter()
@@ -109,7 +111,7 @@ func runServicesFor(t testing.TB, ctx context.Context, then func(l net.Listener)
 }
 
 func startExporter(t testing.TB, ctx context.Context, importerAddress string, services map[string]string) func() {
-	stopExporter, err := exporter.Serve(ctx, exporter.Config{
+	stopExporter, err := client.Serve(ctx, client.Config{
 		ImporterAddress: importerAddress,
 		Services:        services,
 		TLSConfig: grpcapi.TLSConfig{
@@ -122,7 +124,7 @@ func startExporter(t testing.TB, ctx context.Context, importerAddress string, se
 	return stopExporter
 }
 
-func startImporter(t testing.TB, ctx context.Context, services map[string]net.Listener) (net.Listener, func()) {
+func startImporter(t testing.TB, ctx context.Context, services map[string]server.ServiceConfig) (net.Listener, func()) {
 
 	importerListener, err := net.Listen("tcp", "127.0.0.1:0")
 	FatalOnError(t, err)
@@ -130,7 +132,7 @@ func startImporter(t testing.TB, ctx context.Context, services map[string]net.Li
 	// Run the importer.  It does not connect out to any services.  It receives connections
 	// from the exporter and from other apps trying to connect to the private services exposed
 	// by this importer.
-	s, err := importer.New(importer.Config{
+	s, err := server.New(server.Config{
 		Services: services,
 		TLSConfig: grpcapi.TLSConfig{
 			CAFile:   "generated/ca.pem",

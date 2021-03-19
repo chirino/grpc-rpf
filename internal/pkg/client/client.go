@@ -1,8 +1,8 @@
-package exporter
+package client
 
 import (
 	"context"
-	"github.com/chirino/rtsvc/internal/pkg/grpcapi"
+	"github.com/chirino/grpc-rpf/internal/pkg/grpcapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -12,12 +12,13 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type Config struct {
 	ImporterAddress string
 	Services        map[string]string
-	TLSConfig       grpcapi.TLSConfig
+	grpcapi.TLSConfig
 }
 
 var log *_log.Logger
@@ -45,34 +46,49 @@ func Serve(ctx context.Context, config Config) (func(), error) {
 
 	for serviceName, hostPort := range config.Services {
 		hostPort := hostPort
-		// Listen on remote server port
-		//log.Printf("opening listener for service %s -> %s", serviceName, hostPort)
-		serviceClient, err := remoteHost.Listen(ctx, &grpcapi.ServiceAddress{
-			ServiceName: serviceName,
-		})
-		if err != nil {
-			return nil, err
-		}
+		serviceName := serviceName
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			for ; ; {
-				connectionAddress, err := serviceClient.Recv()
-				if err != nil {
-					if status.Code(err) == codes.Canceled {
-						// log.Println("no longer accepting connections")
-						return
-					}
-					log.Printf("error receiving connection address: %v", err)
+			for {
+
+				select {
+				case <-ctx.Done():
+					return
+				default:
 				}
 
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					connect(ctx, &wg, remoteHost, connectionAddress, hostPort)
-				}()
+				// Listen on remote server port
+				//log.Printf("opening listener for service %s -> %s", serviceName, hostPort)
+				serviceClient, err := remoteHost.Listen(ctx, &grpcapi.ServiceAddress{
+					ServiceName: serviceName,
+				})
+				if err != nil {
+					log.Println("error listening on remote host:", err)
+					time.Sleep(1 * time.Second)
+					continue
+				}
+
+				for {
+					connectionAddress, err := serviceClient.Recv()
+					if err != nil {
+						if status.Code(err) == codes.Canceled {
+							// log.Println("no longer accepting connections")
+							return
+						}
+						log.Printf("error receiving connection address: %v", err)
+						time.Sleep(1 * time.Second)
+						continue
+					}
+
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						connect(ctx, &wg, remoteHost, connectionAddress, hostPort)
+					}()
+				}
 			}
 		}()
 	}
