@@ -9,7 +9,9 @@ import (
 	"github.com/chirino/grpc-rpf/internal/pkg/server"
 	"github.com/stretchr/testify/assert"
 	"io"
+	"log"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,8 +91,8 @@ func runServicesFor(t testing.TB, ctx context.Context, then func(l net.Listener)
 	defer portB.Close()
 	// Start the importer service port.
 	//log.Println("echo service proxy is running at", portB.Addr())
-	importerPort, stopImporter := startImporter(t, ctx, map[string]server.ServiceConfig{
-		"echo": server.ServiceConfig{
+	importerPort, stopImporter := startServer(t, map[string]server.ServiceConfig{
+		"echo": {
 			Listener: portB,
 		},
 	})
@@ -102,16 +104,18 @@ func runServicesFor(t testing.TB, ctx context.Context, then func(l net.Listener)
 	portA, stopEchoService := startEchoService(t)
 	defer portA.Close()
 	defer stopEchoService()
-	stopExporter := startExporter(t, ctx, importerPort.Addr().String(), map[string]string{
-		"echo": portA.Addr().String(),
+	stopExporter := startClient(t, importerPort.Addr().String(), map[string]client.ServiceConfig{
+		"echo": {
+			Address: portA.Addr().String(),
+		},
 	})
 	defer stopExporter()
 
 	then(portB)
 }
 
-func startExporter(t testing.TB, ctx context.Context, importerAddress string, services map[string]string) func() {
-	stopExporter, err := client.Serve(ctx, client.Config{
+func startClient(t testing.TB, importerAddress string, services map[string]client.ServiceConfig) func() {
+	c, err := client.New(client.Config{
 		ImporterAddress: importerAddress,
 		Services:        services,
 		TLSConfig: grpcapi.TLSConfig{
@@ -119,12 +123,14 @@ func startExporter(t testing.TB, ctx context.Context, importerAddress string, se
 			CertFile: "generated/client.pem",
 			KeyFile:  "generated/client.key",
 		},
+		Log: log.New(os.Stdout, "client: ", 0),
 	})
 	FatalOnError(t, err)
-	return stopExporter
+	FatalOnError(t, c.Start())
+	return c.Stop
 }
 
-func startImporter(t testing.TB, ctx context.Context, services map[string]server.ServiceConfig) (net.Listener, func()) {
+func startServer(t testing.TB, services map[string]server.ServiceConfig) (net.Listener, func()) {
 
 	importerListener, err := net.Listen("tcp", "127.0.0.1:0")
 	FatalOnError(t, err)
@@ -139,13 +145,13 @@ func startImporter(t testing.TB, ctx context.Context, services map[string]server
 			CertFile: "generated/server.pem",
 			KeyFile:  "generated/server.key",
 		},
+		Log: log.New(os.Stdout, "server: ", 0),
 	})
 	FatalOnError(t, err)
-	go s.Serve(importerListener)
+	s.Start(importerListener)
 
 	//log.Println("importer service is running at", importerListener.Addr())
 	return importerListener, func() {
-		//log.Printf("stopping importer")
 		s.Stop()
 	}
 }

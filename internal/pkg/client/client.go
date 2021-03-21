@@ -7,9 +7,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"io"
-	_log "log"
+	"io/ioutil"
+	"log"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,116 +17,209 @@ import (
 
 type Config struct {
 	ImporterAddress string
-	Services        map[string]string
 	grpcapi.TLSConfig
+	Log      *log.Logger
+	Services map[string]ServiceConfig
 }
 
-var log *_log.Logger
-
-func init() {
-	log = _log.New(os.Stderr, "exporter: ", 0)
+type ServiceConfig struct {
+	Address string
 }
 
-func Serve(ctx context.Context, config Config) (func(), error) {
+type Client struct {
+	config     Config
+	ctx        context.Context
+	cancel     func()
+	wg         sync.WaitGroup
+	log        *log.Logger
+	services   map[string]*service
+	remoteHost grpcapi.RemoteHostClient
+	mu         sync.Mutex
+}
 
-	var wg sync.WaitGroup
-	ctx, cancel := context.WithCancel(ctx)
+func New(config Config) (*Client, error) {
+	c := &Client{
+		log:      config.Log,
+		config:   config,
+		services: map[string]*service{},
+	}
+	if c.log == nil {
+		c.log = log.New(ioutil.Discard, "", 0)
+	}
+	return c, nil
+}
 
-	//log.Println("tls dialing:", config.ImporterAddress)
-	opts, err := grpcapi.NewDialOptions(config.TLSConfig)
+func (client *Client) Start() error {
+
+	client.ctx, client.cancel = context.WithCancel(context.Background())
+	client.log.Println("connecting to GRPC server at:", client.config.ImporterAddress)
+	opts, err := grpcapi.NewDialOptions(client.config.TLSConfig)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	c, err := grpc.Dial(config.ImporterAddress, opts...)
+	c, err := grpc.Dial(client.config.ImporterAddress, opts...)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	remoteHost := grpcapi.NewRemoteHostClient(c)
 
-	for serviceName, hostPort := range config.Services {
-		hostPort := hostPort
-		serviceName := serviceName
+	client.remoteHost = grpcapi.NewRemoteHostClient(c)
+	client.SetServices(client.config.Services)
+	return nil
+}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+func (client *Client) Stop() {
+	client.cancel()
+	client.wg.Wait()
+}
+
+func (client *Client) SetServices(services map[string]ServiceConfig) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	for name, config := range services {
+
+		// Is it a new service...
+		s := client.services[name]
+		if s == nil {
+			s = &service{
+				client:  client,
+				name:    name,
+				_config: config,
+				log:     log.New(client.log.Writer(), client.log.Prefix()+"service '"+name+"': ", client.log.Flags()),
+			}
+			client.services[name] = s
+
+			s.start(client.ctx)
+		} else {
+			s.setConfig(config)
+		}
+	}
+
+	// removing of a service...
+	for name, service := range client.services {
+		if _, ok := services[name]; !ok {
+			delete(client.services, name)
+			service.stop()
+		}
+	}
+}
+
+type service struct {
+	name   string
+	client *Client
+	wg     sync.WaitGroup
+	cancel context.CancelFunc
+
+	// mu guards access to the variables that start with _
+	mu      sync.RWMutex
+	_config ServiceConfig
+	log     *log.Logger
+}
+
+func (s *service) stop() {
+	s.cancel()
+	s.wg.Wait()
+}
+
+func (s *service) setConfig(config ServiceConfig) {
+	s.mu.Lock()
+	if s._config != config {
+		s._config = config
+		s.log.Printf("forwarding changed to: %s", config.Address)
+	}
+	s.mu.Unlock()
+}
+
+func (s *service) start(ctx context.Context) {
+	ctx, s.cancel = context.WithCancel(ctx)
+	s.client.wg.Add(1)
+	s.wg.Add(1)
+
+	go func() {
+		defer func() {
+			s.client.wg.Done()
+			s.wg.Done()
+			s.cancel()
+		}()
+
+	outer:
+		for {
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// Listen on remote server port
+			//log.Printf("opening listener for service %s -> %s", serviceName, hostPort)
+			serviceClient, err := s.client.remoteHost.Listen(ctx, &grpcapi.ServiceAddress{
+				ServiceName: s.name,
+			})
+			if err != nil {
+				s.log.Println("error listening on remote host:", err)
+				time.Sleep(1 * time.Second) // TODO: make backoff a config option...
+				continue
+			}
+
+			s.mu.RLock()
+			s.log.Println("forwarding connections to:", s._config.Address)
+			s.mu.RUnlock()
 
 			for {
-
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-
-				// Listen on remote server port
-				//log.Printf("opening listener for service %s -> %s", serviceName, hostPort)
-				serviceClient, err := remoteHost.Listen(ctx, &grpcapi.ServiceAddress{
-					ServiceName: serviceName,
-				})
+				connectionAddress, err := serviceClient.Recv()
 				if err != nil {
-					log.Println("error listening on remote host:", err)
-					time.Sleep(1 * time.Second)
-					continue
-				}
-
-				for {
-					connectionAddress, err := serviceClient.Recv()
-					if err != nil {
-						if status.Code(err) == codes.Canceled {
-							// log.Println("no longer accepting connections")
-							return
-						}
-						log.Printf("error receiving connection address: %v", err)
-						time.Sleep(1 * time.Second)
-						continue
+					if status.Code(err) == codes.Canceled {
+						return
 					}
-
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						connect(ctx, &wg, remoteHost, connectionAddress, hostPort)
-					}()
+					s.log.Println("error receiving connection address:", err)
+					time.Sleep(1 * time.Second)
+					continue outer
 				}
-			}
-		}()
-	}
 
-	return func() {
-		cancel()
-		wg.Wait()
-	}, nil
+				go s.connect(ctx, connectionAddress)
+			}
+		}
+	}()
 }
 
-func connect(ctx context.Context, wg *sync.WaitGroup, remoteHost grpcapi.RemoteHostClient, connectionAddress *grpcapi.ConnectionAddress, hostPort string) {
+func (s *service) connect(ctx context.Context, connectionAddress *grpcapi.ConnectionAddress) {
+	s.wg.Add(1)
+	defer s.wg.Done()
 
+	// create a new context for the connection...
 	ctx, closeTunnel := context.WithCancel(ctx)
-	grpcTunnel, err := remoteHost.AcceptConnection(ctx)
+	defer closeTunnel()
+
+	grpcConnection, err := s.client.remoteHost.AcceptConnection(ctx)
 	if err != nil {
 		if status.Code(err) == codes.Canceled {
 			return
 		}
-		log.Printf("error opening tunnel: %v", err)
+		s.log.Printf("error opening tunnel: %v", err)
 		return
 	}
-	defer closeTunnel()
 
-	err = grpcTunnel.Send(&grpcapi.ConnectionAddressAndChunk{
+	err = grpcConnection.Send(&grpcapi.ConnectionAddressAndChunk{
 		Address: connectionAddress,
 	})
 	if err != nil {
 		if status.Code(err) == codes.Canceled {
 			return
 		}
-		log.Printf("error sending initial tunnel frame: %v", err)
+		s.log.Printf("error sending initial tunnel frame: %v", err)
 		return
 	}
 
+	s.mu.RLock()
+	hostPort := s._config.Address
+	s.mu.RUnlock()
+
 	conn, err := net.Dial("tcp", hostPort)
 	if err != nil {
-		log.Printf("could not dial local service: %v", err)
-		_ = grpcTunnel.CloseSend()
+		s.log.Printf("could not dial local service: %v", err)
+		_ = grpcConnection.CloseSend()
 		return
 	}
 	var isClosed int32 = 0
@@ -135,17 +228,15 @@ func connect(ctx context.Context, wg *sync.WaitGroup, remoteHost grpcapi.RemoteH
 		conn.Close()
 	}()
 
-	//log.Printf("tunnel #%d opened", connectionAddress.ConnectionId)
-	wg.Add(1)
+	// start go routine to pump bytes from grpc to the socket...
+	s.wg.Add(1)
 	go func() {
-		defer wg.Done()
-
 		defer func() {
+			s.wg.Done()
 			closeTunnel()
-			//log.Printf("writer done")
 		}()
 		for {
-			msg, err := grpcTunnel.Recv()
+			msg, err := grpcConnection.Recv()
 			if err != nil {
 				if err == io.EOF {
 					return
@@ -156,7 +247,7 @@ func connect(ctx context.Context, wg *sync.WaitGroup, remoteHost grpcapi.RemoteH
 				if atomic.LoadInt32(&isClosed) == 1 {
 					return
 				}
-				log.Printf("error receiving tunnel frame: %v", err)
+				s.log.Printf("error receiving tunnel frame: %v", err)
 				return
 			}
 
@@ -165,39 +256,39 @@ func connect(ctx context.Context, wg *sync.WaitGroup, remoteHost grpcapi.RemoteH
 				if atomic.LoadInt32(&isClosed) == 1 {
 					return
 				}
-				log.Printf("error writing to connection: %v", err)
+				s.log.Printf("error writing to connection: %v", err)
 				return
 			}
 			if n != len(msg.Data) {
-				log.Printf("error writing to connection: short write")
+				s.log.Printf("error writing to connection: short write")
 				return
 			}
 		}
 	}()
 
-	wg.Add(1)
+	// start go routine to pump bytes from the socket to grpc...
+	s.wg.Add(1)
 	go func() {
-		defer wg.Done()
-
 		defer func() {
+			s.wg.Done()
 			closeTunnel()
-			//log.Printf("reader done")
 		}()
 		data := make([]byte, 1024*4)
 		for {
 			n, err := conn.Read(data)
 			if err != nil {
 				if err == io.EOF {
+					_ = grpcConnection.CloseSend()
 					return
 				}
 				if atomic.LoadInt32(&isClosed) == 1 {
 					return
 				}
-				log.Printf("error reading connection: %v", err)
+				s.log.Printf("error reading connection: %v", err)
 				return
 			}
 			if n > 0 {
-				err = grpcTunnel.Send(&grpcapi.ConnectionAddressAndChunk{
+				err = grpcConnection.Send(&grpcapi.ConnectionAddressAndChunk{
 					Data: data[0:n],
 				})
 				if err != nil {
@@ -207,7 +298,7 @@ func connect(ctx context.Context, wg *sync.WaitGroup, remoteHost grpcapi.RemoteH
 					if status.Code(err) == codes.Canceled {
 						return
 					}
-					log.Printf("error writting tunnel frame: %v", err)
+					s.log.Printf("error writing tunnel frame: %v", err)
 					return
 				}
 			}

@@ -1,21 +1,26 @@
 package client
 
 import (
-	"context"
 	"fmt"
 	"github.com/chirino/grpc-rpf/internal/cmd/app"
 	"github.com/chirino/grpc-rpf/internal/pkg/client"
+	"github.com/chirino/grpc-rpf/internal/pkg/utils"
 	"github.com/spf13/cobra"
+	"io/ioutil"
+	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
 
 var (
-	config = client.Config{
+	exportsDir = ""
+	config     = client.Config{
 		ImporterAddress: "localhost:34343",
-		Services:        map[string]string{},
+		Services:        map[string]client.ServiceConfig{},
+		Log:             log.New(os.Stdout, "", 0),
 	}
 	Command = &cobra.Command{
 		Use:   "client",
@@ -25,14 +30,14 @@ var (
 Use this in your private network to export services to a reverse port forward server`,
 		RunE: commandRun,
 	}
-	services = []string{}
+	exports []string
 )
 
 func init() {
 
 	Command.Flags().StringVar(&config.ImporterAddress, "server", config.ImporterAddress, "server address in address:port format")
-	Command.Flags().StringArrayVar(&services, "export", services, "service to export in name=address:port format")
-	_ = Command.MarkFlagRequired("export")
+	Command.Flags().StringArrayVar(&exports, "export", exports, "service to export in name=address:port format")
+	Command.Flags().StringVar(&exportsDir, "exports-dir", exportsDir, "watch a directory holding export configurations")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "connect to the server using an insecure TLS connection.")
 	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
 	Command.Flags().StringVar(&config.CertFile, "crt-file", "importer.crt", "public certificate file")
@@ -40,31 +45,101 @@ func init() {
 	app.Command.AddCommand(Command)
 }
 
-func commandRun(cmd *cobra.Command, args []string) error {
+func commandRun(_ *cobra.Command, _ []string) error {
+	if exportsDir == "" && len(exports) == 0 {
+		return fmt.Errorf("option --export or --export-dir is required")
+	}
+	if exportsDir != "" && len(exports) != 0 {
+		return fmt.Errorf("option --export or --export-dir are exclusive, use only one")
+	}
 
-	for _, s := range services {
+	for _, s := range exports {
 		sp := strings.Split(s, "=")
 		if len(sp) != 2 {
 			return fmt.Errorf("invalid --export argument: should be in name=host:port format, got: %s", s)
 		}
 		name := sp[0]
 		hostPort := sp[1]
-		config.Services[name] = hostPort
+		config.Services[name] = client.ServiceConfig{
+			Address: hostPort,
+		}
 	}
 
 	app.HandleErrorWithExitCode(func() error {
-		stopExporter, err := client.Serve(context.Background(), config)
+		c, err := client.New(config)
 		if err != nil {
 			return err
 		}
 
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-		<-sigs
+		err = c.Start()
+		if err != nil {
+			return err
+		}
+
+		defer c.Stop()
+		if exportsDir != "" {
+			err := loadExporterConfigs(c)
+			if err != nil {
+				return err
+			}
+			stopWatching, err := utils.WatchDir(exportsDir, func() {
+				config.Log.Println("config change detected")
+				err := loadExporterConfigs(c)
+				if err != nil {
+					config.Log.Println(err)
+				}
+			})
+			if err != nil {
+				return err
+			}
+			defer stopWatching()
+		}
+
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+		<-signals
 		fmt.Println("shutting down")
 
-		stopExporter()
 		return nil
 	}, 2)
+	return nil
+}
+
+func loadExporterConfigs(c *client.Client) error {
+	files, err := ioutil.ReadDir(exportsDir)
+	if err != nil {
+		return fmt.Errorf("error loading imports directory: %v", err)
+	}
+
+	type ExporterConfig struct {
+		Name    string `yaml:"name"`
+		Address string `yaml:"address"`
+	}
+
+	config.Services = map[string]client.ServiceConfig{}
+	for _, f := range files {
+		value := ExporterConfig{}
+		file := filepath.Join(exportsDir, f.Name())
+		err := utils.ReadConfigFile(file, &value)
+		if err != nil {
+			config.Log.Printf("error loading export file '%s': %v", file, err)
+			continue
+		}
+
+		if value.Name == "" {
+			config.Log.Printf("error loading export file '%s': service name not configured", file)
+			continue
+		}
+
+		if value.Address == "" {
+			config.Log.Printf("error loading export file '%s': service address not configured", file)
+			continue
+		}
+
+		config.Services[value.Name] = client.ServiceConfig{
+			Address: value.Address,
+		}
+	}
+	c.SetServices(config.Services)
 	return nil
 }

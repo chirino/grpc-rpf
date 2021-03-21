@@ -7,8 +7,10 @@ message ServiceAddress {
 }
 
 message ConnectionAddress {
-  int32 serverId = 1;
-  int64 connectionId = 2;
+  // set if a redirect needs to occur
+  string redirectHostPort = 1;
+  // a randomized token needed to accept the connection.
+  bytes token = 3;
 }
 
 message Chunk  {
@@ -22,5 +24,6 @@ message ConnectionAddressAndChunk  {
 
 service RemoteHost {
   rpc Listen(ServiceAddress) returns (stream ConnectionAddress) {}
+  rpc Connect(stream ConnectionAddressAndChunk) returns (stream ConnectionAddressAndChunk) {}
   rpc AcceptConnection(stream ConnectionAddressAndChunk) returns (stream Chunk) {}
 }

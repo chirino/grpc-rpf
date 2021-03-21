@@ -10,16 +10,20 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 var (
 	listen     = ":34343"
-	importsDir = "imports.d"
+	importsDir = ""
 	config     = server.Config{
 		Services:  map[string]server.ServiceConfig{},
 		TLSConfig: grpcapi.TLSConfig{},
+		Log:       log.New(os.Stdout, "", 0),
 	}
 	Command = &cobra.Command{
 		Use:   "server",
@@ -29,13 +33,13 @@ var (
 Use this in your public network to import services that are exported from the client.`,
 		RunE: commandRun,
 	}
-	services = []string{}
+	imports []string
 )
 
 func init() {
 	Command.Flags().StringVar(&listen, "listen", listen, "grpc address to bind")
-	Command.Flags().StringArrayVar(&services, "import", services, "service address to bind in name=address:port format")
-	Command.Flags().StringVar(&importsDir, "imports-dir", importsDir, "directory holding import configurations")
+	Command.Flags().StringArrayVar(&imports, "import", imports, "service address to bind in name=address:port format")
+	Command.Flags().StringVar(&importsDir, "imports-dir", importsDir, "watch a directory holding import configurations")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "private key file")
 	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
 	Command.Flags().StringVar(&config.CertFile, "crt-file", "importer.crt", "public certificate file")
@@ -43,14 +47,15 @@ func init() {
 	app.Command.AddCommand(Command)
 }
 
-type ImportConfig struct {
-	Name   string
-	Listen string
-}
+func commandRun(_ *cobra.Command, _ []string) error {
+	if importsDir == "" && len(imports) == 0 {
+		return fmt.Errorf("option --import or --imports-dir is required")
+	}
+	if importsDir != "" && len(imports) != 0 {
+		return fmt.Errorf("option --import or --imports-dir are exclusive, use only one")
+	}
 
-func commandRun(cmd *cobra.Command, args []string) error {
-
-	for _, s := range services {
+	for _, s := range imports {
 		sp := strings.Split(s, "=")
 		if len(sp) != 2 {
 			return fmt.Errorf("invalid --import argument: should be in host:port=name format, got: %s", s)
@@ -67,44 +72,78 @@ func commandRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		defer importerListener.Close()
 
 		s, err := server.New(config)
 		if err != nil {
 			return err
 		}
-		s.Serve(importerListener)
+		s.Start(importerListener)
+		defer s.Stop()
 
 		if importsDir != "" {
-			stopWatching, err := utils.WatchDir(importsDir, loadImporterConfigs)
+			err := loadImporterConfigs(s)
+			if err != nil {
+				return err
+			}
+			stopWatching, err := utils.WatchDir(importsDir, func() {
+				config.Log.Println("config change detected")
+				err := loadImporterConfigs(s)
+				if err != nil {
+					config.Log.Println(err)
+				}
+			})
 			if err != nil {
 				return err
 			}
 			defer stopWatching()
 		}
 
-		////log.Printf("stopping importer")
-		//s.Stop()
+		// Wait for shutdown signal...
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+		<-signals
+		config.Log.Println("shutting down")
 		return nil
 	}, 2)
 	return nil
 }
 
-func loadImporterConfigs() {
+func loadImporterConfigs(serverInstance *server.Server) error {
 	files, err := ioutil.ReadDir(importsDir)
 	if err != nil {
-		log.Printf("error loading imports directory: %v", err)
-		return
+		return fmt.Errorf("error loading imports directory: %v", err)
 	}
 
-	var values []ImportConfig
+	type ImportConfig struct {
+		Name   string `yaml:"name"`
+		Listen string `yaml:"listen"`
+	}
+
+	config.Services = map[string]server.ServiceConfig{}
 	for _, f := range files {
 		value := ImportConfig{}
 		file := filepath.Join(importsDir, f.Name())
 		err := utils.ReadConfigFile(file, &value)
 		if err != nil {
-			log.Printf("error loading import file '%s': %v", file, err)
+			config.Log.Printf("error loading import file '%s': %v", file, err)
 			continue
 		}
-		values = append(values, value)
+
+		if value.Name == "" {
+			config.Log.Printf("error loading import file '%s': service name not configured", file)
+			continue
+		}
+
+		if value.Listen == "" {
+			config.Log.Printf("error loading import file '%s': service listen address not configured", file)
+			continue
+		}
+
+		config.Services[value.Name] = server.ServiceConfig{
+			Listen: value.Listen,
+		}
 	}
+	serverInstance.SetServices(config.Services)
+	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type ServiceConfig struct {
@@ -25,39 +26,40 @@ type ServiceConfig struct {
 type Config struct {
 	Services map[string]ServiceConfig
 	grpcapi.TLSConfig
-	Log *log.Logger
+	Log           *log.Logger
+	AcceptTimeout time.Duration
 }
 
-func New(config Config) (*server, error) {
+func New(config Config) (*Server, error) {
 	opts, err := grpcapi.NewServerOptions(config.TLSConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "invalid GRPC server configuration")
 	}
 
 	grpcServer := grpc.NewServer(opts...)
-	s := &server{
+	s := &Server{
 		Server:             grpcServer,
 		services:           map[string]*serviceListener{},
-		pendingConnections: map[int64]net.Conn{},
-		id:                 rand.Int31(),
+		pendingConnections: map[string]net.Conn{},
+		mu:                 sync.RWMutex{},
 		log:                config.Log,
+		acceptTimeout:      config.AcceptTimeout,
 	}
 	if s.log == nil {
 		s.log = log.New(ioutil.Discard, "", 0)
 	}
-	s.setServices(config.Services)
+	s.SetServices(config.Services)
 	grpcapi.RegisterRemoteHostServer(grpcServer, s)
 	return s, nil
 }
 
-type server struct {
+type Server struct {
 	*grpc.Server
 	services           map[string]*serviceListener
-	id                 int32
-	lastConnectionId   int64
-	pendingConnections map[int64]net.Conn
-	mu                 sync.Mutex
+	pendingConnections map[string]net.Conn
+	mu                 sync.RWMutex
 	log                *log.Logger
+	acceptTimeout      time.Duration
 }
 
 type serviceListener struct {
@@ -65,10 +67,11 @@ type serviceListener struct {
 	listener    net.Listener
 	mu          sync.Mutex
 	config      ServiceConfig
+	stopChan    chan bool
 	closeOnStop bool
 }
 
-func (s *server) setServices(services map[string]ServiceConfig) {
+func (s *Server) SetServices(services map[string]ServiceConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -82,6 +85,7 @@ func (s *server) setServices(services map[string]ServiceConfig) {
 				config:      config,
 				listener:    config.Listener,
 				closeOnStop: false,
+				stopChan:    make(chan bool, 0),
 			}
 		} else {
 			if sl.closeOnStop && sl.config.Listen != config.Listen {
@@ -95,16 +99,35 @@ func (s *server) setServices(services map[string]ServiceConfig) {
 			var err error
 			sl.listener, err = net.Listen("tcp", config.Listen)
 			if err != nil {
-				log.Println("Could not listen:", err)
+				s.log.Printf("error: service '%s': %v", name, err)
 				continue
 			}
+			s.log.Printf("listening for '%s' connections on: %s", name, sl.listener.Addr())
 			sl.closeOnStop = true
 		}
 		s.services[name] = sl
 	}
+
+	// removing of a service...
+	for name, service := range s.services {
+		if _, ok := services[name]; !ok {
+			delete(s.services, name)
+			close(service.stopChan)
+		}
+	}
 }
 
-func (s *server) Stop() {
+func (s *Server) Start(l net.Listener) {
+	go func() {
+		s.log.Printf("listening for GRPC connections on: %s", l.Addr())
+		err := s.Server.Serve(l)
+		if err != nil {
+			s.log.Println("could not start server: ", err)
+		}
+	}()
+}
+
+func (s *Server) Stop() {
 	s.Server.Stop()
 	for _, s := range s.services {
 		if s.closeOnStop {
@@ -113,27 +136,56 @@ func (s *server) Stop() {
 	}
 }
 
-func (s *server) registerConnection(conn net.Conn) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.lastConnectionId += 1
-	s.pendingConnections[s.lastConnectionId] = conn
-	return s.lastConnectionId
-}
+func (s *Server) registerConnection(c net.Conn) (token []byte) {
+	token = GenerateRandomBytes(16)
+	key := string(token)
 
-func (s *server) deregisterConnection(connectionId int64) net.Conn {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	conn := s.pendingConnections[connectionId]
-	if conn != nil {
-		delete(s.pendingConnections, connectionId)
+
+	for {
+		if _, found := s.pendingConnections[key]; !found {
+			s.pendingConnections[key] = c
+			s.mu.Unlock()
+			return token
+		}
+		// try again with a new token.. should not really happen often..
+		token = GenerateRandomBytes(16)
+		key = string(token)
 	}
-	return conn
 }
 
-func (s *server) Listen(address *grpcapi.ServiceAddress, listenServer grpcapi.RemoteHost_ListenServer) error {
+func GenerateRandomBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
+}
 
+var InvalidToken = errors.New("invalid token")
+
+func (s *Server) deregisterConnection(address *grpcapi.ConnectionAddress) (net.Conn, error) {
+	key := string(address.Token)
+
+	s.mu.Lock()
+	conn, ok := s.pendingConnections[key]
+	delete(s.pendingConnections, key)
+	s.mu.Unlock()
+
+	if !ok {
+		return nil, InvalidToken
+	}
+	return conn, nil
+}
+
+func (s *Server) Connect(grpcapi.RemoteHost_ConnectServer) error {
+	return fmt.Errorf("not implemented yet")
+}
+
+func (s *Server) Listen(address *grpcapi.ServiceAddress, listenServer grpcapi.RemoteHost_ListenServer) error {
+
+	s.mu.RLock()
 	service, found := s.services[address.ServiceName]
+	s.mu.RUnlock()
+
 	if !found {
 		return fmt.Errorf("serice not found: %s", address.ServiceName)
 	}
@@ -142,7 +194,6 @@ func (s *server) Listen(address *grpcapi.ServiceAddress, listenServer grpcapi.Re
 	// block here and act as backups in case the first one dies.
 	service.mu.Lock()
 	defer service.mu.Unlock()
-
 	for {
 
 		conn, err := service.listener.Accept()
@@ -150,13 +201,25 @@ func (s *server) Listen(address *grpcapi.ServiceAddress, listenServer grpcapi.Re
 			return err
 		}
 
-		connId := s.registerConnection(conn)
+		token := s.registerConnection(conn)
+
+		address := &grpcapi.ConnectionAddress{
+			// RedirectHostPort: "",
+			Token: token,
+		}
+
+		if s.acceptTimeout != 0 {
+			time.AfterFunc(s.acceptTimeout, func() {
+				conn, err := s.deregisterConnection(address)
+				if err == nil {
+					s.log.Println("connection was not accepted within the timeout.  closing connection.")
+					conn.Close()
+				}
+			})
+		}
 
 		// send an event to the client so he can accept the connection.
-		err = listenServer.Send(&grpcapi.ConnectionAddress{
-			ServerId:     s.id,
-			ConnectionId: connId,
-		})
+		err = listenServer.Send(address)
 		if err != nil {
 			return err
 		}
@@ -164,7 +227,7 @@ func (s *server) Listen(address *grpcapi.ServiceAddress, listenServer grpcapi.Re
 	}
 }
 
-func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConnectionServer) error {
+func (s *Server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConnectionServer) error {
 
 	ctx, cancel := context.WithCancel(grpcConnnection.Context())
 	defer cancel()
@@ -174,18 +237,13 @@ func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConne
 		if status.Code(err) == codes.Canceled {
 			return nil
 		}
-		log.Printf("error: %v", err)
+		s.log.Printf("error: %v", err)
 		return nil
 	}
 
-	// In case request gets load balanced to the wrong server...
-	if msg.Address.ServerId != s.id {
-		return fmt.Errorf("server id does not match")
-	}
-
-	conn := s.deregisterConnection(msg.Address.ConnectionId)
-	if conn == nil {
-		return fmt.Errorf("connection id not found: %d", msg.Address.ConnectionId)
+	conn, err := s.deregisterConnection(msg.Address)
+	if err != nil {
+		return err
 	}
 
 	var isClosed int32 = 0
@@ -194,6 +252,7 @@ func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConne
 		conn.Close()
 	}()
 
+	// start go routine to pump bytes from grpc to the socket...
 	go func() {
 		defer cancel()
 		for {
@@ -206,7 +265,7 @@ func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConne
 					cancel()
 					return
 				}
-				log.Printf("error receiving tunnel frame: %v", err)
+				s.log.Printf("error receiving tunnel frame: %v", err)
 
 				return
 			}
@@ -216,7 +275,7 @@ func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConne
 				if atomic.LoadInt32(&isClosed) == 1 {
 					return
 				}
-				log.Printf("error writing to connection: %v", err)
+				s.log.Printf("error writing to connection: %v", err)
 				return
 			}
 			if n != len(msg.Data) {
@@ -226,6 +285,7 @@ func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConne
 		}
 	}()
 
+	// start go routine to pump bytes from the socket to grpc...
 	go func() {
 		defer cancel()
 		data := make([]byte, 1024*4)
@@ -238,7 +298,7 @@ func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConne
 				if err == io.EOF {
 					return
 				}
-				log.Printf("error reading from connection: %v", err)
+				s.log.Printf("error reading from connection: %v", err)
 				return
 			}
 			if n > 0 {
@@ -250,7 +310,7 @@ func (s *server) AcceptConnection(grpcConnnection grpcapi.RemoteHost_AcceptConne
 						cancel()
 						return
 					}
-					log.Printf("error sending tunnel frame: %v", err)
+					s.log.Printf("error sending tunnel frame: %v", err)
 					return
 				}
 			}

@@ -1,9 +1,9 @@
 package utils
 
 import (
-	"time"
-	"github.com/fsnotify/fsnotify"
 	"github.com/bep/debounce"
+	"github.com/fsnotify/fsnotify"
+	"time"
 )
 
 func WatchDir(dir string, checkForNewVersion func()) (Close func() error, err error) {
@@ -15,7 +15,7 @@ func WatchDir(dir string, checkForNewVersion func()) (Close func() error, err er
 
 	// Lets debounce to avoid generating too many change events when lots
 	// of files are being updated in short time.
-	debounced := debounce.New(100 * time.Millisecond)
+	debounced := debounce.New(500 * time.Millisecond)
 
 	go func() {
 		defer watcher.Close()
