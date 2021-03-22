@@ -15,3 +15,6 @@
 
 # test reports
 /reports/*.xml
+
+# generated files
+/internal/itest/generated/*

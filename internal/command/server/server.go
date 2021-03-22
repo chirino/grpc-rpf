@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"fmt"
-	"github.com/chirino/grpc-rpf/internal/cmd/app"
+	"github.com/chirino/grpc-rpf/internal/command/app"
 	"github.com/chirino/grpc-rpf/internal/pkg/grpcapi"
 	"github.com/chirino/grpc-rpf/internal/pkg/server"
 	"github.com/chirino/grpc-rpf/internal/pkg/utils"
+	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
 	"github.com/spf13/cobra"
 	"io/ioutil"
 	"log"
@@ -14,32 +16,45 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 )
 
+type ImportConfig struct {
+	Name                 string   `yaml:"name"`
+	Listen               string   `yaml:"listen"`
+	AllowedListenTokens  []string `yaml:"allowed-listen-tokens"`
+	AllowedConnectTokens []string `yaml:"allowed-connect-tokens"`
+}
+
 var (
-	listen     = ":34343"
-	importsDir = ""
-	config     = server.Config{
+	listen      = ":34343"
+	servicesDir = ""
+	config      = server.Config{
 		Services:  map[string]server.ServiceConfig{},
 		TLSConfig: grpcapi.TLSConfig{},
 		Log:       log.New(os.Stdout, "", 0),
 	}
-	Command = &cobra.Command{
+	importsMap = map[string]ImportConfig{}
+	Command    = &cobra.Command{
 		Use:   "server",
 		Short: "Runs the reverse port forward server.",
 		Long: `Runs the reverse port forward server.  
 
 Use this in your public network to import services that are exported from the client.`,
-		RunE: commandRun,
+		PersistentPreRunE: app.BindEnv("GRPC_RPF"),
+		RunE:              commandRun,
 	}
-	imports []string
+	services       []string
+	InvalidService = fmt.Errorf("invalid service")
+	NotAuthorized  = fmt.Errorf("not authorized")
+	mu             = sync.RWMutex{}
 )
 
 func init() {
 	Command.Flags().StringVar(&listen, "listen", listen, "grpc address to bind")
-	Command.Flags().StringArrayVar(&imports, "import", imports, "service address to bind in name=address:port format")
-	Command.Flags().StringVar(&importsDir, "imports-dir", importsDir, "watch a directory holding import configurations")
+	Command.Flags().StringArrayVar(&services, "service", services, "service address to bind in name(=address:port) format")
+	Command.Flags().StringVar(&servicesDir, "service-dir", servicesDir, "watch a directory holding service configurations")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "private key file")
 	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
 	Command.Flags().StringVar(&config.CertFile, "crt-file", "importer.crt", "public certificate file")
@@ -48,21 +63,32 @@ func init() {
 }
 
 func commandRun(_ *cobra.Command, _ []string) error {
-	if importsDir == "" && len(imports) == 0 {
+
+	if servicesDir == "" && len(services) == 0 {
 		return fmt.Errorf("option --import or --imports-dir is required")
 	}
-	if importsDir != "" && len(imports) != 0 {
+	if servicesDir != "" && len(services) != 0 {
 		return fmt.Errorf("option --import or --imports-dir are exclusive, use only one")
 	}
 
-	for _, s := range imports {
+	for _, s := range services {
+		name := ""
+		hostPort := ""
 		sp := strings.Split(s, "=")
-		if len(sp) != 2 {
-			return fmt.Errorf("invalid --import argument: should be in host:port=name format, got: %s", s)
+		switch len(sp) {
+		case 1:
+			name = sp[0]
+		case 2:
+			name = sp[0]
+			hostPort = sp[1]
+		default:
+			return fmt.Errorf("invalid --service argument: should be in name(=host:port) format, got: %s", s)
 		}
-		name := sp[0]
-		hostPort := sp[1]
 		config.Services[name] = server.ServiceConfig{
+			Listen: hostPort,
+		}
+		importsMap[name] = ImportConfig{
+			Name:   name,
 			Listen: hostPort,
 		}
 	}
@@ -74,6 +100,58 @@ func commandRun(_ *cobra.Command, _ []string) error {
 		}
 		defer importerListener.Close()
 
+		//config.AuthFunc = func(ctx context.Context) (context.Context, error) {
+		//	_, err := grpc_auth.AuthFromMD(ctx, "Bearer")
+		//	if err != nil {
+		//		return ctx, err
+		//	}
+		//	return ctx, nil
+		//}
+
+		config.OnListenFunc = func(ctx context.Context, service string) (string, error) {
+			mu.RLock()
+			defer mu.RUnlock()
+			s, found := importsMap[service]
+			if !found {
+				return "", InvalidService
+			}
+			if len(s.AllowedListenTokens) > 0 {
+				token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
+				if err != nil {
+					return "", err
+				}
+				for _, allowedToken := range s.AllowedListenTokens {
+					if token == allowedToken {
+						return "", nil
+					}
+				}
+				return "", NotAuthorized
+			}
+			return "", nil
+		}
+
+		config.OnConnectFunc = func(ctx context.Context, service string) (string, error) {
+			mu.RLock()
+			defer mu.RUnlock()
+			s, found := importsMap[service]
+			if !found {
+				return "", InvalidService
+			}
+			if len(s.AllowedConnectTokens) > 0 {
+				token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
+				if err != nil {
+					return "", err
+				}
+				for _, allowedToken := range s.AllowedConnectTokens {
+					if token == allowedToken {
+						return "", nil
+					}
+				}
+				return "", NotAuthorized
+			}
+			return "", nil
+		}
+
 		s, err := server.New(config)
 		if err != nil {
 			return err
@@ -81,12 +159,12 @@ func commandRun(_ *cobra.Command, _ []string) error {
 		s.Start(importerListener)
 		defer s.Stop()
 
-		if importsDir != "" {
+		if servicesDir != "" {
 			err := loadImporterConfigs(s)
 			if err != nil {
 				return err
 			}
-			stopWatching, err := utils.WatchDir(importsDir, func() {
+			stopWatching, err := utils.WatchDir(servicesDir, func() {
 				config.Log.Println("config change detected")
 				err := loadImporterConfigs(s)
 				if err != nil {
@@ -110,20 +188,16 @@ func commandRun(_ *cobra.Command, _ []string) error {
 }
 
 func loadImporterConfigs(serverInstance *server.Server) error {
-	files, err := ioutil.ReadDir(importsDir)
+	files, err := ioutil.ReadDir(servicesDir)
 	if err != nil {
 		return fmt.Errorf("error loading imports directory: %v", err)
 	}
 
-	type ImportConfig struct {
-		Name   string `yaml:"name"`
-		Listen string `yaml:"listen"`
-	}
-
+	im := map[string]ImportConfig{}
 	config.Services = map[string]server.ServiceConfig{}
 	for _, f := range files {
 		value := ImportConfig{}
-		file := filepath.Join(importsDir, f.Name())
+		file := filepath.Join(servicesDir, f.Name())
 		err := utils.ReadConfigFile(file, &value)
 		if err != nil {
 			config.Log.Printf("error loading import file '%s': %v", file, err)
@@ -143,7 +217,11 @@ func loadImporterConfigs(serverInstance *server.Server) error {
 		config.Services[value.Name] = server.ServiceConfig{
 			Listen: value.Listen,
 		}
+		im[value.Name] = value
 	}
 	serverInstance.SetServices(config.Services)
+	mu.Lock()
+	importsMap = im
+	mu.Unlock()
 	return nil
 }

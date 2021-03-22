@@ -1,4 +1,4 @@
-# `grpc-rpf` : GRPC Remote Port Forward
+# `grpc-rpf` : GRPC Reverse Port Forward
 
 [![CircleCI](https://circleci.com/gh/chirino/grpc-rpf.svg?style=svg)](https://circleci.com/gh/chirino/grpc-rpf)
 

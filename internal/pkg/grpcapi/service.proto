@@ -17,6 +17,11 @@ message Chunk  {
   bytes data = 1;
 }
 
+message ServiceAddressAndChunk  {
+  ServiceAddress address = 1;
+  bytes data = 2;
+}
+
 message ConnectionAddressAndChunk  {
   ConnectionAddress address = 1;
   bytes data = 2;
@@ -24,6 +29,6 @@ message ConnectionAddressAndChunk  {
 
 service RemoteHost {
   rpc Listen(ServiceAddress) returns (stream ConnectionAddress) {}
-  rpc Connect(stream ConnectionAddressAndChunk) returns (stream ConnectionAddressAndChunk) {}
+  rpc Connect(stream ServiceAddressAndChunk) returns (stream ConnectionAddressAndChunk) {}
   rpc AcceptConnection(stream ConnectionAddressAndChunk) returns (stream Chunk) {}
 }

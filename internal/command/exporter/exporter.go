@@ -1,9 +1,9 @@
-package client
+package exporter
 
 import (
 	"fmt"
-	"github.com/chirino/grpc-rpf/internal/cmd/app"
-	"github.com/chirino/grpc-rpf/internal/pkg/client"
+	"github.com/chirino/grpc-rpf/internal/command/app"
+	"github.com/chirino/grpc-rpf/internal/pkg/exporter"
 	"github.com/chirino/grpc-rpf/internal/pkg/utils"
 	"github.com/spf13/cobra"
 	"io/ioutil"
@@ -17,26 +17,27 @@ import (
 
 var (
 	exportsDir = ""
-	config     = client.Config{
-		ImporterAddress: "localhost:34343",
-		Services:        map[string]client.ServiceConfig{},
-		Log:             log.New(os.Stdout, "", 0),
+	config     = exporter.Config{
+		ServerAddress: "localhost:34343",
+		Services:      map[string]exporter.ServiceConfig{},
+		Log:           log.New(os.Stdout, "", 0),
 	}
 	Command = &cobra.Command{
-		Use:   "client",
-		Short: "Runs the reverse port forward client.",
-		Long: `Runs the reverse port forward client.  
+		Use:   "exporter",
+		Short: "Runs the reverse port forward client to export services to the server.",
+		Long: `Runs the reverse port forward client to export services to the server.  
 
 Use this in your private network to export services to a reverse port forward server`,
-		RunE: commandRun,
+		PersistentPreRunE: app.BindEnv("GRPC_RPF"),
+		RunE:              commandRun,
 	}
 	exports []string
 )
 
 func init() {
-
-	Command.Flags().StringVar(&config.ImporterAddress, "server", config.ImporterAddress, "server address in address:port format")
+	Command.Flags().StringVar(&config.ServerAddress, "server", config.ServerAddress, "server address in address:port format")
 	Command.Flags().StringArrayVar(&exports, "export", exports, "service to export in name=address:port format")
+	Command.Flags().StringVar(&config.AccessToken, "access-token", config.AccessToken, "access token used to identify the client")
 	Command.Flags().StringVar(&exportsDir, "exports-dir", exportsDir, "watch a directory holding export configurations")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "connect to the server using an insecure TLS connection.")
 	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
@@ -60,13 +61,13 @@ func commandRun(_ *cobra.Command, _ []string) error {
 		}
 		name := sp[0]
 		hostPort := sp[1]
-		config.Services[name] = client.ServiceConfig{
+		config.Services[name] = exporter.ServiceConfig{
 			Address: hostPort,
 		}
 	}
 
 	app.HandleErrorWithExitCode(func() error {
-		c, err := client.New(config)
+		c, err := exporter.New(config)
 		if err != nil {
 			return err
 		}
@@ -105,7 +106,7 @@ func commandRun(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func loadExporterConfigs(c *client.Client) error {
+func loadExporterConfigs(c *exporter.Client) error {
 	files, err := ioutil.ReadDir(exportsDir)
 	if err != nil {
 		return fmt.Errorf("error loading imports directory: %v", err)
@@ -116,7 +117,7 @@ func loadExporterConfigs(c *client.Client) error {
 		Address string `yaml:"address"`
 	}
 
-	config.Services = map[string]client.ServiceConfig{}
+	config.Services = map[string]exporter.ServiceConfig{}
 	for _, f := range files {
 		value := ExporterConfig{}
 		file := filepath.Join(exportsDir, f.Name())
@@ -136,7 +137,7 @@ func loadExporterConfigs(c *client.Client) error {
 			continue
 		}
 
-		config.Services[value.Name] = client.ServiceConfig{
+		config.Services[value.Name] = exporter.ServiceConfig{
 			Address: value.Address,
 		}
 	}
