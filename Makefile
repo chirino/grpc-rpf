@@ -1,6 +1,7 @@
 
 # Build to with goreleaser
 build:
+	go test ./...
 	goreleaser --snapshot --rm-dist
 .PHONY: build
 

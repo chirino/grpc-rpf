@@ -21,7 +21,7 @@ func TestRedirect(t *testing.T) {
 	servers := []*testServer{}
 	serverConfig := func(idx int, c server.Config) server.Config {
 		//c.Log = log.New(os.Stdout, "server", 0)
-		c.OnListenFunc = func(ctx context.Context, service string) (string, error) {
+		c.OnListenFunc = func(ctx context.Context, service string) (string, func(), error) {
 			if idx == 0 {
 				// lets try to redirect to the 2nd server...
 				mu.Lock()
@@ -29,11 +29,11 @@ func TestRedirect(t *testing.T) {
 				mu.Unlock()
 
 				if len(s) == 2 {
-					return s[1].grpcPort.Addr().String(), nil
+					return s[1].grpcPort.Addr().String(), nil, nil
 				}
-				return "", NotReady
+				return "", nil, NotReady
 			}
-			return "", nil
+			return "", nil, nil
 		}
 		return c
 	}

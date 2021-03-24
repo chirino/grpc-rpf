@@ -19,15 +19,15 @@ var PermissionDenied = status.Error(codes.PermissionDenied, "permission denied")
 func TestAccess(t *testing.T) {
 	serverConfig := func(idx int, c server.Config) server.Config {
 		//c.Log = log.New(os.Stdout, "server", 0)
-		c.OnListenFunc = func(ctx context.Context, service string) (string, error) {
+		c.OnListenFunc = func(ctx context.Context, service string) (string, func(), error) {
 			token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
 			if err != nil {
-				return "", err
+				return "", nil, err
 			}
 			if token == "good" {
-				return "", nil
+				return "", nil, nil
 			}
-			return "", PermissionDenied
+			return "", nil, PermissionDenied
 		}
 		return c
 	}
