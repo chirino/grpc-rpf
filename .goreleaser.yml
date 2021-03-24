@@ -17,8 +17,8 @@ dockers:
   - goos: linux
     goarch: amd64
     image_templates:
-      - "quay.io/chirino/grcp-rpf:latest"
-      - "quay.io/chirino/grcp-rpf:{{.Version}}"
+      - "quay.io/hchirino/grpc-rpf:latest"
+      - "quay.io/hchirino/grcp-rpf:{{.Version}}"
 
 archives:
   - replacements:
