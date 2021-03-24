@@ -6,37 +6,30 @@ import (
 	"github.com/chirino/grpc-rpf/internal/command/app"
 	"github.com/chirino/grpc-rpf/internal/pkg/grpcapi"
 	"github.com/chirino/grpc-rpf/internal/pkg/server"
-	"github.com/chirino/grpc-rpf/internal/pkg/utils"
+	"github.com/chirino/grpc-rpf/internal/pkg/store"
 	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
 	"github.com/spf13/cobra"
-	"io/ioutil"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 )
 
-type ImportConfig struct {
-	Name                 string   `yaml:"name"`
-	Listen               string   `yaml:"listen"`
-	AllowedListenTokens  []string `yaml:"allowed-listen-tokens"`
-	AllowedConnectTokens []string `yaml:"allowed-connect-tokens"`
-}
-
 var (
-	listen      = ":34343"
-	servicesDir = ""
-	config      = server.Config{
+	listen            = ":8080"
+	advertisedAddress = ""
+	servicesDir       = ""
+	config            = server.Config{
 		Services:  map[string]server.ServiceConfig{},
 		TLSConfig: grpcapi.TLSConfig{},
 		Log:       log.New(os.Stdout, "", 0),
 	}
-	importsMap = map[string]ImportConfig{}
-	Command    = &cobra.Command{
+	Command = &cobra.Command{
 		Use:   "server",
 		Short: "Runs the reverse port forward server.",
 		Long: `Runs the reverse port forward server.  
@@ -45,16 +38,16 @@ Use this in your public network to import services that are exported from the cl
 		PersistentPreRunE: app.BindEnv("GRPC_RPF"),
 		RunE:              commandRun,
 	}
-	services       []string
-	InvalidService = fmt.Errorf("invalid service")
-	NotAuthorized  = fmt.Errorf("not authorized")
-	mu             = sync.RWMutex{}
+	services  []string
+	serviceDB string
 )
 
 func init() {
 	Command.Flags().StringVar(&listen, "listen", listen, "grpc address to bind")
 	Command.Flags().StringArrayVar(&services, "service", services, "service address to bind in name(=address:port) format")
 	Command.Flags().StringVar(&servicesDir, "service-dir", servicesDir, "watch a directory holding service configurations")
+	Command.Flags().StringVar(&serviceDB, "service-db", serviceDB, "database to use for configuration and state sharing")
+	Command.Flags().StringVar(&advertisedAddress, "advertised-address", advertisedAddress, "the host:port that clients can connect to")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "private key file")
 	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
 	Command.Flags().StringVar(&config.CertFile, "crt-file", "importer.crt", "public certificate file")
@@ -64,11 +57,14 @@ func init() {
 
 func commandRun(_ *cobra.Command, _ []string) error {
 
-	if servicesDir == "" && len(services) == 0 {
-		return fmt.Errorf("option --import or --imports-dir is required")
+	if serviceDB == "" && servicesDir == "" && len(services) == 0 {
+		return fmt.Errorf("option --service-db, --service, or --service-dir is required")
 	}
-	if servicesDir != "" && len(services) != 0 {
-		return fmt.Errorf("option --import or --imports-dir are exclusive, use only one")
+	if serviceDB != "" && servicesDir != "" && len(services) != 0 {
+		return fmt.Errorf("option --service-db, --service, and --service-dir are exclusive, use only one")
+	}
+	if advertisedAddress == "" && serviceDB == "" {
+		return fmt.Errorf("when --service-db is used, you must also specify the advertised-address option")
 	}
 
 	for _, s := range services {
@@ -87,70 +83,52 @@ func commandRun(_ *cobra.Command, _ []string) error {
 		config.Services[name] = server.ServiceConfig{
 			Listen: hostPort,
 		}
-		importsMap[name] = ImportConfig{
-			Name:   name,
-			Listen: hostPort,
-		}
 	}
 
 	app.HandleErrorWithExitCode(func() error {
+
+		var err error
+		var serverStore store.Store
+		if serviceDB != "" {
+			serverStore, err = store.NewDBStore(serviceDB, advertisedAddress)
+			if err != nil {
+				return err
+			}
+		} else if servicesDir != "" {
+			serverStore, err = store.NewDirStore(servicesDir)
+			if err != nil {
+				return err
+			}
+		}
+		if serverStore != nil {
+			err = serverStore.Start()
+			if err != nil {
+				return err
+			}
+			defer serverStore.Stop()
+
+			config.OnListenFunc = func(ctx context.Context, service string) (string, func(), error) {
+				token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
+				if err != nil {
+					return "", nil, err
+				}
+				return serverStore.OnListen(service, token, getPeerAddress(ctx))
+			}
+
+			config.OnConnectFunc = func(ctx context.Context, service string) (string, func(), error) {
+				token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
+				if err != nil {
+					return "", nil, err
+				}
+				return serverStore.OnConnect(service, token, getPeerAddress(ctx))
+			}
+		}
+
 		importerListener, err := net.Listen("tcp", listen)
 		if err != nil {
 			return err
 		}
 		defer importerListener.Close()
-
-		//config.AuthFunc = func(ctx context.Context) (context.Context, error) {
-		//	_, err := grpc_auth.AuthFromMD(ctx, "Bearer")
-		//	if err != nil {
-		//		return ctx, err
-		//	}
-		//	return ctx, nil
-		//}
-
-		config.OnListenFunc = func(ctx context.Context, service string) (string, error) {
-			mu.RLock()
-			defer mu.RUnlock()
-			s, found := importsMap[service]
-			if !found {
-				return "", InvalidService
-			}
-			if len(s.AllowedListenTokens) > 0 {
-				token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
-				if err != nil {
-					return "", err
-				}
-				for _, allowedToken := range s.AllowedListenTokens {
-					if token == allowedToken {
-						return "", nil
-					}
-				}
-				return "", NotAuthorized
-			}
-			return "", nil
-		}
-
-		config.OnConnectFunc = func(ctx context.Context, service string) (string, error) {
-			mu.RLock()
-			defer mu.RUnlock()
-			s, found := importsMap[service]
-			if !found {
-				return "", InvalidService
-			}
-			if len(s.AllowedConnectTokens) > 0 {
-				token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
-				if err != nil {
-					return "", err
-				}
-				for _, allowedToken := range s.AllowedConnectTokens {
-					if token == allowedToken {
-						return "", nil
-					}
-				}
-				return "", NotAuthorized
-			}
-			return "", nil
-		}
 
 		s, err := server.New(config)
 		if err != nil {
@@ -158,24 +136,6 @@ func commandRun(_ *cobra.Command, _ []string) error {
 		}
 		s.Start(importerListener)
 		defer s.Stop()
-
-		if servicesDir != "" {
-			err := loadImporterConfigs(s)
-			if err != nil {
-				return err
-			}
-			stopWatching, err := utils.WatchDir(servicesDir, func() {
-				config.Log.Println("config change detected")
-				err := loadImporterConfigs(s)
-				if err != nil {
-					config.Log.Println(err)
-				}
-			})
-			if err != nil {
-				return err
-			}
-			defer stopWatching()
-		}
 
 		// Wait for shutdown signal...
 		signals := make(chan os.Signal, 1)
@@ -187,41 +147,30 @@ func commandRun(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func loadImporterConfigs(serverInstance *server.Server) error {
-	files, err := ioutil.ReadDir(servicesDir)
-	if err != nil {
-		return fmt.Errorf("error loading imports directory: %v", err)
+func getPeerAddress(ctx context.Context) string {
+	source := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		source = getForwardedFor(http.Header(md))
 	}
-
-	im := map[string]ImportConfig{}
-	config.Services = map[string]server.ServiceConfig{}
-	for _, f := range files {
-		value := ImportConfig{}
-		file := filepath.Join(servicesDir, f.Name())
-		err := utils.ReadConfigFile(file, &value)
-		if err != nil {
-			config.Log.Printf("error loading import file '%s': %v", file, err)
-			continue
+	if source == "" {
+		if p, ok := peer.FromContext(ctx); ok {
+			source = p.Addr.String()
 		}
-
-		if value.Name == "" {
-			config.Log.Printf("error loading import file '%s': service name not configured", file)
-			continue
-		}
-
-		if value.Listen == "" {
-			config.Log.Printf("error loading import file '%s': service listen address not configured", file)
-			continue
-		}
-
-		config.Services[value.Name] = server.ServiceConfig{
-			Listen: value.Listen,
-		}
-		im[value.Name] = value
 	}
-	serverInstance.SetServices(config.Services)
-	mu.Lock()
-	importsMap = im
-	mu.Unlock()
-	return nil
+	return source
+}
+
+func getForwardedFor(headers http.Header) string {
+	h := headers.Get("Forwarded")
+	if h != "" {
+		for _, kv := range strings.Split(h, ";") {
+			if pair := strings.SplitN(kv, "=", 2); len(pair) == 2 {
+				switch strings.ToLower(pair[0]) {
+				case "for":
+					return pair[1]
+				}
+			}
+		}
+	}
+	return headers.Get("x-forwarded-for")
 }

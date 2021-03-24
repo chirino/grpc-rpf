@@ -41,8 +41,8 @@ type Config struct {
 	EnableOpenTracing bool
 	EnablePrometheus  bool
 	OnAuthFunc        grpc_auth.AuthFunc
-	OnListenFunc      func(ctx context.Context, service string) (string, error)
-	OnConnectFunc     func(ctx context.Context, service string) (string, error)
+	OnListenFunc      func(ctx context.Context, service string) (string, func(), error)
+	OnConnectFunc     func(ctx context.Context, service string) (string, func(), error)
 }
 
 func New(config Config) (*Server, error) {
@@ -101,8 +101,8 @@ type Server struct {
 	mu             sync.RWMutex
 	log            *log.Logger
 	acceptTimeout  time.Duration
-	OnListenFunc   func(ctx context.Context, service string) (string, error)
-	OnConnectFunc  func(ctx context.Context, service string) (string, error)
+	OnListenFunc   func(ctx context.Context, service string) (string, func(), error)
+	OnConnectFunc  func(ctx context.Context, service string) (string, func(), error)
 }
 
 func (s *Server) SetServices(services map[string]ServiceConfig) {
@@ -321,9 +321,13 @@ func (s *Server) Connect(grpcConnnection grpcapi.RemoteHost_ConnectServer) error
 	}
 
 	if s.OnConnectFunc != nil {
-		redirectHostPort, err := s.OnConnectFunc(grpcConnnection.Context(), address.ServiceName)
+		redirectHostPort, closeFunc, err := s.OnConnectFunc(grpcConnnection.Context(), address.ServiceName)
 		if err != nil {
 			return err
+		}
+
+		if closeFunc != nil {
+			defer closeFunc()
 		}
 
 		if redirectHostPort != "" {
@@ -400,9 +404,12 @@ func wrapAcceptStream(ctx context.Context, c grpcapi.RemoteHost_AcceptConnection
 func (s *Server) Listen(address *grpcapi.ServiceAddress, listenServer grpcapi.RemoteHost_ListenServer) error {
 
 	if s.OnListenFunc != nil {
-		redirectHostPort, err := s.OnListenFunc(listenServer.Context(), address.ServiceName)
+		redirectHostPort, closeFunc, err := s.OnListenFunc(listenServer.Context(), address.ServiceName)
 		if err != nil {
 			return err
+		}
+		if closeFunc != nil {
+			defer closeFunc()
 		}
 		if redirectHostPort != "" {
 			err := listenServer.Send(&grpcapi.ConnectionAddress{
