@@ -1,0 +1,13 @@
+apiVersion: v2
+name: grpc-rpf
+description: GRPC Reverse Port Forward Server
+type: application
+version: 0.0.0
+appVersion: "v0.0.0-next"
+dependencies:
+  - name: postgresql
+    repository: https://charts.bitnami.com/bitnami
+    version: 1.x.x
+sources:
+  - https://github.com/chirino/grpc-rpf
+engine: gotpl
