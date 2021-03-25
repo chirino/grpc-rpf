@@ -21,8 +21,44 @@ type gorm_store struct {
 	wg             sync.WaitGroup
 }
 
-func NewDBStore(dsn string, serverHostPort string) (Store, error) {
-	db, err := gorm.Open(postgres.Open(dsn))
+type DatabaseConfig interface {
+	Dialector() gorm.Dialector
+}
+
+type PostgresConfig struct {
+	Host     string
+	Port     int
+	SslMode  string
+	Database string
+	User     string
+	Password string
+}
+
+func DefaultPostgresConfig() PostgresConfig {
+	return PostgresConfig{
+		Host:     "localhost",
+		Port:     5432,
+		SslMode:  "disable",
+		Database: "postgres",
+		User:     "postgres",
+		Password: "",
+	}
+}
+
+func (d PostgresConfig) Dialector() gorm.Dialector {
+	dsn := fmt.Sprintf("host='%s' port=%d user='%s' password='%s' dbname='%s' sslmode='%s'",
+		d.Host,
+		d.Port,
+		d.User,
+		d.Password,
+		d.Database,
+		d.SslMode,
+	)
+	return postgres.Open(dsn)
+}
+
+func NewDBStore(dc DatabaseConfig, serverHostPort string) (Store, error) {
+	db, err := gorm.Open(dc.Dialector())
 	if err != nil {
 		return nil, err
 	}

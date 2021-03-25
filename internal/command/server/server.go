@@ -38,15 +38,25 @@ Use this in your public network to import services that are exported from the cl
 		PersistentPreRunE: app.BindEnv("GRPC_RPF"),
 		RunE:              commandRun,
 	}
-	services  []string
-	serviceDB string
+	services       []string
+	storeType      string
+	postgresConfig = store.DefaultPostgresConfig()
 )
 
 func init() {
 	Command.Flags().StringVar(&listen, "listen", listen, "grpc address to bind")
 	Command.Flags().StringArrayVar(&services, "service", services, "service address to bind in name(=address:port) format")
-	Command.Flags().StringVar(&servicesDir, "service-dir", servicesDir, "watch a directory holding service configurations")
-	Command.Flags().StringVar(&serviceDB, "service-db", serviceDB, "database to use for configuration and state sharing")
+
+	Command.Flags().StringVar(&storeType, "store-type", storeType, "Where to load service configuration from: can be one of: dir|postgresql")
+	Command.Flags().StringVar(&servicesDir, "service-dir", servicesDir, "directory that will hold service configurations")
+
+	Command.Flags().StringVar(&postgresConfig.Host, "postgresql-host", postgresConfig.Host, "postgresql host name")
+	Command.Flags().IntVar(&postgresConfig.Port, "postgresql-port", postgresConfig.Port, "postgresql port")
+	Command.Flags().StringVar(&postgresConfig.SslMode, "postgresql-ssl-mode", postgresConfig.SslMode, "postgresql ssl mode")
+	Command.Flags().StringVar(&postgresConfig.Database, "postgresql-database", postgresConfig.Database, "postgresql database name")
+	Command.Flags().StringVar(&postgresConfig.User, "postgresql-user", postgresConfig.User, "postgresql user name")
+	Command.Flags().StringVar(&postgresConfig.Password, "postgresql-password", postgresConfig.Password, "postgresql password")
+
 	Command.Flags().StringVar(&advertisedAddress, "advertised-address", advertisedAddress, "the host:port that clients can connect to")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "private key file")
 	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
@@ -57,14 +67,51 @@ func init() {
 
 func commandRun(_ *cobra.Command, _ []string) error {
 
-	if serviceDB == "" && servicesDir == "" && len(services) == 0 {
-		return fmt.Errorf("option --service-db, --service, or --service-dir is required")
+	if storeType == "" && len(services) == 0 {
+		return fmt.Errorf("option  --service or --store-type is required")
 	}
-	if serviceDB != "" && servicesDir != "" && len(services) != 0 {
-		return fmt.Errorf("option --service-db, --service, and --service-dir are exclusive, use only one")
+	if storeType != "" && len(services) != 0 {
+		return fmt.Errorf("option --service and --store-type are exclusive, use only one")
 	}
-	if advertisedAddress == "" && serviceDB == "" {
-		return fmt.Errorf("when --service-db is used, you must also specify the advertised-address option")
+	switch storeType {
+	case "":
+	case "dir":
+		if servicesDir == "" {
+			return fmt.Errorf("when --store-type=dir is used, you must also specify the --service-dir option")
+		}
+	case "postgresql":
+		if advertisedAddress == "" {
+			return fmt.Errorf("when --store-type=postgresql is used, you must also specify the --advertised-address option")
+		}
+	default:
+		return fmt.Errorf("invalid value for --store-type option")
+	}
+
+	importerListener, listenErr := net.Listen("tcp", listen)
+
+	// it might just be an ip address... lets fill in the port...
+	if advertisedAddress != "" && listenErr == nil {
+		host, _, err := net.SplitHostPort(advertisedAddress)
+		if err != nil {
+			if err, ok := err.(*net.AddrError); ok {
+				if err.Err == "missing port in address" {
+					// lets add the port...
+					_, p, err := net.SplitHostPort(importerListener.Addr().String())
+					if err == nil {
+						advertisedAddress = fmt.Sprintf("%s:%s", advertisedAddress, p)
+					}
+				}
+			} else {
+				return fmt.Errorf("invalid --advertised-address value: %v", err)
+			}
+			host, _, err = net.SplitHostPort(advertisedAddress)
+			if err != nil {
+				return fmt.Errorf("invalid --advertised-address value: %v", err)
+			}
+		}
+		if host == "" {
+			return fmt.Errorf("invalid --advertised-address value: host must be specified")
+		}
 	}
 
 	for _, s := range services {
@@ -87,19 +134,26 @@ func commandRun(_ *cobra.Command, _ []string) error {
 
 	app.HandleErrorWithExitCode(func() error {
 
+		if listenErr != nil {
+			return listenErr
+		}
+
 		var err error
 		var serverStore store.Store
-		if serviceDB != "" {
-			serverStore, err = store.NewDBStore(serviceDB, advertisedAddress)
-			if err != nil {
-				return err
-			}
-		} else if servicesDir != "" {
+		switch storeType {
+		case "":
+		case "dir":
 			serverStore, err = store.NewDirStore(servicesDir)
 			if err != nil {
 				return err
 			}
+		case "postgresql":
+			serverStore, err = store.NewDBStore(postgresConfig, advertisedAddress)
+			if err != nil {
+				return err
+			}
 		}
+
 		if serverStore != nil {
 			err = serverStore.Start()
 			if err != nil {
@@ -124,10 +178,6 @@ func commandRun(_ *cobra.Command, _ []string) error {
 			}
 		}
 
-		importerListener, err := net.Listen("tcp", listen)
-		if err != nil {
-			return err
-		}
 		defer importerListener.Close()
 
 		s, err := server.New(config)
