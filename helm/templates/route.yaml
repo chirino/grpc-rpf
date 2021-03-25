@@ -16,13 +16,10 @@ spec:
   to:
     kind: Service
     name: {{ $fullName }}
-    weight: 100
   port:
-    targetPort: 8443
+    targetPort: {{ $Values.service.port }}
   tls:
     termination: passthrough
-    insecureEdgeTerminationPolicy: None
-  wildcardPolicy: None
 
   {{range $i, $e := until (int .Values.autoscaling.maxReplicas)}}
 ---
@@ -41,11 +38,8 @@ spec:
   to:
     kind: Service
     name: {{ $fullName }}- {{$i}}
-    weight: 100
   port:
-    targetPort: 8443
+    targetPort: {{ $Values.service.port }}
   tls:
     termination: passthrough
-    insecureEdgeTerminationPolicy: None
-  wildcardPolicy: None
   {{end}}

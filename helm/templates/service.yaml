@@ -9,11 +9,11 @@ metadata:
   labels:
   {{- include "chart.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: LoadBalancer
   ports:
     - protocol: TCP
       port: {{ .Values.service.port }}
-      targetPort: 8443
+      targetPort: {{ $Values.service.port }}
 
   selector:
   {{- $selectorLabels }}
@@ -35,7 +35,6 @@ spec:
   ports:
     - protocol: TCP
       port: {{ $Values.service.port }}
-      targetPort: 8443
 
   selector:
     statefulset.kubernetes.io/pod-name: "{{ $fullName }}-{{$i}}"

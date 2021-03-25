@@ -37,8 +37,7 @@ securityContext: { }
 # runAsUser: 1000
 
 service:
-  type: LoadBalancer
-  port: 443
+  port: 8443
 
 ingress:
   hostname: grpc-rpf.local
