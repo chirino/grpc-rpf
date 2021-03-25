@@ -2,11 +2,14 @@
 package itest
 
 import (
+	"bufio"
 	"context"
 	"github.com/chirino/grpc-rpf/internal/pkg/exporter"
+	"github.com/chirino/grpc-rpf/internal/pkg/importer"
 	"github.com/chirino/grpc-rpf/internal/pkg/server"
 	"github.com/chirino/grpc-rpf/internal/pkg/store"
 	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
@@ -61,5 +64,34 @@ func TestPostgreStore(t *testing.T) {
 		return c
 	}
 
-	RunServicesForNServers(t, 1, runHelloPingTest(t, 10000), serverConfig, exporterConfig)
+	RunServicesForNServers(t, 1, runHelloPingTestDialServer(t, 10000), serverConfig, exporterConfig)
+}
+
+func runHelloPingTestDialServer(t testing.TB, iterations int) func(s []*testServer, c *exporter.Client) {
+	return func(s []*testServer, c *exporter.Client) {
+
+		conn, err := importer.Dial(context.Background(), "echo", importer.DialConfig{
+			ServerAddress: s[0].grpcPort.Addr().String(),
+			TLSConfig:     c.Config.TLSConfig,
+			Log:           nil,
+			AccessToken:   "token2",
+		})
+		FatalOnError(t, err)
+		defer conn.Close()
+
+		//log.Println("client: sending hello!")
+		for i := 0; i < iterations; i++ {
+			_, err = conn.Write([]byte("hello!\n"))
+			FatalOnError(t, err)
+		}
+
+		r := bufio.NewReader(conn)
+
+		for i := 0; i < iterations; i++ {
+			data, err := r.ReadString('\n')
+			FatalOnError(t, err)
+			assert.Equal(t, "hello!\n", data)
+			//log.Println("client: received hello!")
+		}
+	}
 }

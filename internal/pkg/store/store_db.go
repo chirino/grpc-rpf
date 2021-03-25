@@ -132,7 +132,7 @@ func (store *gorm_store) OnConnect(service string, token string, from string) (r
 
 	// Do this server have a binding?
 	var count int64
-	err = store.DB.Where(&Binding{ServerID: store.serverId, ServiceID: service}).Count(&count).Error
+	err = store.DB.Where(&Binding{ServerID: store.serverId, ServiceID: service}).Model(&Binding{}).Count(&count).Error
 	if err != nil {
 		return "", nil, err
 	}

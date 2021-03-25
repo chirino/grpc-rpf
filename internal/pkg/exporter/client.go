@@ -31,7 +31,7 @@ type ServiceConfig struct {
 }
 
 type Client struct {
-	config      Config
+	Config      Config
 	ctx         context.Context
 	cancel      func()
 	wg          sync.WaitGroup
@@ -45,7 +45,7 @@ type Client struct {
 func New(config Config) (*Client, error) {
 	c := &Client{
 		log:         config.Log,
-		config:      config,
+		Config:      config,
 		services:    map[string]*service{},
 		accessToken: config.AccessToken,
 	}
@@ -57,7 +57,7 @@ func New(config Config) (*Client, error) {
 
 func (client *Client) Start() error {
 	client.ctx, client.cancel = context.WithCancel(context.Background())
-	opts, err := grpcapi.NewDialOptions(client.config.TLSConfig)
+	opts, err := grpcapi.NewDialOptions(client.Config.TLSConfig)
 
 	if err != nil {
 		return err
@@ -70,7 +70,7 @@ func (client *Client) Start() error {
 	}
 	client.dailOptions = opts
 
-	client.SetServices(client.config.Services)
+	client.SetServices(client.Config.Services)
 	return nil
 }
 
@@ -94,7 +94,7 @@ func (client *Client) SetServices(services map[string]ServiceConfig) {
 		if s == nil {
 			s = &service{
 				client:        client,
-				serverAddress: client.config.ServerAddress,
+				serverAddress: client.Config.ServerAddress,
 				name:          name,
 				_config:       config,
 				err:           NotStarted,

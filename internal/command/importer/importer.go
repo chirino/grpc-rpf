@@ -18,9 +18,11 @@ import (
 var (
 	importsDir = ""
 	config     = importer.Config{
-		ServerAddress: "localhost:34343",
-		Services:      map[string]importer.ServiceConfig{},
-		Log:           log.New(os.Stdout, "", 0),
+		DialConfig: importer.DialConfig{
+			ServerAddress: "localhost:34343",
+			Log:           log.New(os.Stdout, "", 0),
+		},
+		Services: map[string]importer.ServiceConfig{},
 	}
 	Command = &cobra.Command{
 		Use:   "importer",

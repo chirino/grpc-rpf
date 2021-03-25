@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"fmt"
 	"github.com/chirino/grpc-rpf/internal/pkg/grpcapi"
 	"github.com/chirino/grpc-rpf/internal/pkg/utils"
 	"golang.org/x/oauth2"
@@ -9,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/oauth"
 	"google.golang.org/grpc/status"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -17,12 +19,16 @@ import (
 	"time"
 )
 
-type Config struct {
+type DialConfig struct {
 	ServerAddress string
 	grpcapi.TLSConfig
 	Log         *log.Logger
-	Services    map[string]ServiceConfig
 	AccessToken string
+}
+
+type Config struct {
+	DialConfig
+	Services map[string]ServiceConfig
 }
 
 type ServiceConfig struct {
@@ -31,23 +37,25 @@ type ServiceConfig struct {
 }
 
 type Client struct {
-	config      Config
-	ctx         context.Context
-	cancel      func()
-	wg          sync.WaitGroup
-	log         *log.Logger
-	services    map[string]*service
-	mu          sync.Mutex
-	accessToken string
-	dailOptions []grpc.DialOption
+	config        DialConfig
+	serviceConfig map[string]ServiceConfig
+	ctx           context.Context
+	cancel        func()
+	wg            sync.WaitGroup
+	log           *log.Logger
+	services      map[string]*service
+	mu            sync.Mutex
+	accessToken   string
+	dailOptions   []grpc.DialOption
 }
 
 func New(config Config) (*Client, error) {
 	c := &Client{
-		log:         config.Log,
-		config:      config,
-		services:    map[string]*service{},
-		accessToken: config.AccessToken,
+		log:           config.Log,
+		config:        config.DialConfig,
+		serviceConfig: config.Services,
+		services:      map[string]*service{},
+		accessToken:   config.AccessToken,
 	}
 	if c.log == nil {
 		c.log = log.New(ioutil.Discard, "", 0)
@@ -70,7 +78,7 @@ func (client *Client) Start() error {
 	}
 	client.dailOptions = opts
 
-	client.SetServices(client.config.Services)
+	client.SetServices(client.serviceConfig)
 	return nil
 }
 
@@ -90,14 +98,8 @@ func (client *Client) SetServices(services map[string]ServiceConfig) {
 		if s == nil {
 			stopChan := make(chan struct{})
 			close(stopChan)
-			s = &service{
-				client:        client,
-				serverAddress: client.config.ServerAddress,
-				name:          name,
-				config:        config,
-				stopChan:      stopChan,
-				log:           utils.AddLogPrefix(client.log, "service '"+name+"': "),
-			}
+			s = client.newServiceHandler(name)
+			s.config = config
 			client.services[name] = s
 			s.start()
 		} else {
@@ -116,6 +118,18 @@ func (client *Client) SetServices(services map[string]ServiceConfig) {
 	}
 }
 
+func (s *Client) newServiceHandler(name string) *service {
+	stopChan := make(chan struct{})
+	close(stopChan)
+	return &service{
+		client:        s,
+		serverAddress: s.config.ServerAddress,
+		name:          name,
+		stopChan:      stopChan,
+		log:           utils.AddLogPrefix(s.log, "service '"+name+"': "),
+	}
+}
+
 type service struct {
 	client *Client
 	name   string
@@ -130,16 +144,6 @@ type service struct {
 	listenerToClose net.Listener
 	serverAddress   string
 	remoteHost      grpcapi.RemoteHostClient
-}
-
-func (s *Client) newServiceHandler(name string) *service {
-	stopChan := make(chan struct{})
-	close(stopChan)
-	return &service{
-		name:     name,
-		log:      utils.AddLogPrefix(s.log, "service '"+name+"': "),
-		stopChan: stopChan,
-	}
 }
 
 func isStopped(c chan struct{}) bool {
@@ -265,51 +269,13 @@ func (s *service) connect(ctx context.Context, conn1 utils.Conn) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Try to establish the initial connection.. handling redirects...
-	var grpcConnection grpcapi.RemoteHost_ConnectClient
-	for {
-		remoteHost, err := s.GetRemoteHost()
-		if err != nil {
-			s.log.Printf("error opening connection: %v", err)
+	grpcConnection, err := s.handshake(ctx)
+	if err != nil {
+		if status.Code(err) == codes.Canceled {
 			return
 		}
-		grpcConnection, err = remoteHost.Connect(ctx)
-		if err != nil {
-			if status.Code(err) == codes.Canceled {
-				return
-			}
-			s.log.Printf("error opening connection: %v", err)
-			return
-		}
-		err = grpcConnection.Send(&grpcapi.ServiceAddressAndChunk{
-			Address: &grpcapi.ServiceAddress{
-				ServiceName: s.name,
-			},
-		})
-		if err != nil {
-			_ = grpcConnection.CloseSend()
-			if status.Code(err) == codes.Canceled {
-				return
-			}
-			s.log.Printf("error opening connection: %v", err)
-			return
-		}
-		recv, err := grpcConnection.Recv()
-		if err != nil {
-			_ = grpcConnection.CloseSend()
-			if status.Code(err) == codes.Canceled {
-				return
-			}
-			s.log.Printf("error opening connection: %v", err)
-			return
-		}
-
-		if recv.Address != nil && recv.Address.RedirectHostPort != "" {
-			_ = grpcConnection.CloseSend()
-			s.SetServerAddress(recv.Address.RedirectHostPort)
-			continue
-		}
-		break
+		s.log.Println(err)
+		return
 	}
 
 	var isClosed int32 = 0
@@ -337,6 +303,52 @@ func (s *service) connect(ctx context.Context, conn1 utils.Conn) {
 	}
 }
 
+func (s *service) handshake(ctx context.Context) (grpcapi.RemoteHost_ConnectClient, error) {
+	// Try to establish the initial connection.. handling redirects...
+	var grpcConnection grpcapi.RemoteHost_ConnectClient
+	for {
+		remoteHost, err := s.GetRemoteHost()
+		if err != nil {
+			return nil, fmt.Errorf("error opening connection: %v", err)
+		}
+		grpcConnection, err = remoteHost.Connect(ctx)
+		if err != nil {
+			if status.Code(err) == codes.Canceled {
+				return nil, err
+			}
+			return nil, fmt.Errorf("error opening connection: %v", err)
+		}
+		err = grpcConnection.Send(&grpcapi.ServiceAddressAndChunk{
+			Address: &grpcapi.ServiceAddress{
+				ServiceName: s.name,
+			},
+		})
+		if err != nil {
+			_ = grpcConnection.CloseSend()
+			if status.Code(err) == codes.Canceled {
+				return nil, err
+			}
+			return nil, fmt.Errorf("error opening connection: %v", err)
+		}
+		recv, err := grpcConnection.Recv()
+		if err != nil {
+			_ = grpcConnection.CloseSend()
+			if status.Code(err) == codes.Canceled {
+				return nil, err
+			}
+			return nil, fmt.Errorf("error opening connection: %v", err)
+		}
+
+		if recv.Address != nil && recv.Address.RedirectHostPort != "" {
+			_ = grpcConnection.CloseSend()
+			s.SetServerAddress(recv.Address.RedirectHostPort)
+			continue
+		}
+		break
+	}
+	return grpcConnection, nil
+}
+
 func wrapStream(ctx context.Context, c grpcapi.RemoteHost_ConnectClient, cancel context.CancelFunc) utils.Conn {
 	return &utils.WrapperConn{
 		Send: func(data []byte) error {
@@ -354,4 +366,84 @@ func wrapStream(ctx context.Context, c grpcapi.RemoteHost_ConnectClient, cancel 
 		Context: ctx,
 		Cancel:  cancel,
 	}
+}
+
+func Dial(ctx context.Context, service string, config DialConfig) (*PipeConn, error) {
+	c := &Client{
+		config:      config,
+		log:         config.Log,
+		accessToken: config.AccessToken,
+	}
+	if c.log == nil {
+		c.log = log.New(ioutil.Discard, "", 0)
+	}
+
+	opts, err := grpcapi.NewDialOptions(c.config.TLSConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.accessToken != "" {
+		opts = append(opts, grpc.WithPerRPCCredentials(oauth.NewOauthAccess(&oauth2.Token{
+			AccessToken: c.accessToken,
+		})))
+	}
+	c.dailOptions = opts
+	s := c.newServiceHandler(service)
+
+	grcp, err := s.handshake(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	a1, b1 := io.Pipe()
+	a2, b2 := io.Pipe()
+
+	connA := &PipeConn{
+		reader: a1,
+		writer: b2,
+	}
+	connB := &PipeConn{
+		reader: a2,
+		writer: b1,
+	}
+
+	conn2 := wrapStream(ctx, grcp, func() {
+		_ = connA.Close()
+		_ = connB.Close()
+	})
+
+	// start go routine to pump bytes from grpc to the socket...
+	wg := sync.WaitGroup{}
+	// start transfer pumps
+	utils.Pump(&wg, conn2, connA, &connA.isClosed, s.log)
+	utils.Pump(&wg, connA, conn2, &connA.isClosed, s.log)
+
+	return connB, nil
+}
+
+type PipeConn struct {
+	isClosed int32
+	reader   *io.PipeReader
+	writer   *io.PipeWriter
+}
+
+func (c PipeConn) Read(b []byte) (n int, err error) {
+	return c.reader.Read(b)
+}
+
+func (c PipeConn) Write(b []byte) (n int, err error) {
+	return c.writer.Write(b)
+}
+
+func (c PipeConn) Close() error {
+	err1 := c.writer.Close()
+	err2 := c.reader.Close()
+	if err1 != nil {
+		return err1
+	}
+	if err2 != nil {
+		return err2
+	}
+	return nil
 }
