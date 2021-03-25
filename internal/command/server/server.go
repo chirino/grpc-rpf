@@ -23,6 +23,8 @@ import (
 var (
 	listen            = ":8080"
 	advertisedAddress = ""
+	advertisedDomain  = ""
+	advertisedPort    = uint(0)
 	servicesDir       = ""
 	config            = server.Config{
 		Services:  map[string]server.ServiceConfig{},
@@ -44,6 +46,7 @@ Use this in your public network to import services that are exported from the cl
 )
 
 func init() {
+
 	Command.Flags().StringVar(&listen, "listen", listen, "grpc address to bind")
 	Command.Flags().StringArrayVar(&services, "service", services, "service address to bind in name(=address:port) format")
 
@@ -58,6 +61,9 @@ func init() {
 	Command.Flags().StringVar(&postgresConfig.Password, "postgresql-password", postgresConfig.Password, "postgresql password")
 
 	Command.Flags().StringVar(&advertisedAddress, "advertised-address", advertisedAddress, "the host:port that clients can connect to")
+	Command.Flags().StringVar(&advertisedDomain, "advertised-domain", advertisedDomain, "the domain that this host is advertised on")
+	Command.Flags().UintVar(&advertisedPort, "advertised-port", advertisedPort, "the port that this host is advertised on")
+
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "private key file")
 	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
 	Command.Flags().StringVar(&config.CertFile, "crt-file", "tls.crt", "public certificate file")
@@ -89,6 +95,13 @@ func commandRun(_ *cobra.Command, _ []string) error {
 
 	importerListener, listenErr := net.Listen("tcp", listen)
 
+	if advertisedAddress == "" && advertisedDomain != "" {
+		s, err := os.Hostname()
+		if err == nil {
+			advertisedAddress = s + "." + advertisedDomain
+		}
+	}
+
 	// it might just be an ip address... lets fill in the port...
 	if advertisedAddress != "" && listenErr == nil {
 		host, _, err := net.SplitHostPort(advertisedAddress)
@@ -96,9 +109,13 @@ func commandRun(_ *cobra.Command, _ []string) error {
 			if err, ok := err.(*net.AddrError); ok {
 				if err.Err == "missing port in address" {
 					// lets add the port...
-					_, p, err := net.SplitHostPort(importerListener.Addr().String())
-					if err == nil {
-						advertisedAddress = fmt.Sprintf("%s:%s", advertisedAddress, p)
+					if advertisedPort != 0 {
+						advertisedAddress = fmt.Sprintf("%s:%d", advertisedAddress, advertisedPort)
+					} else {
+						_, p, err := net.SplitHostPort(importerListener.Addr().String())
+						if err == nil {
+							advertisedAddress = fmt.Sprintf("%s:%s", advertisedAddress, p)
+						}
 					}
 				}
 			} else {
@@ -112,6 +129,10 @@ func commandRun(_ *cobra.Command, _ []string) error {
 		if host == "" {
 			return fmt.Errorf("invalid --advertised-address value: host must be specified")
 		}
+	}
+
+	if advertisedAddress != "" {
+		log.Println("advertised address is: " + advertisedAddress)
 	}
 
 	for _, s := range services {
