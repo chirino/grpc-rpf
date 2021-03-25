@@ -233,7 +233,7 @@ func (store *gorm_store) backgroundTasks() {
 			}
 
 			var deadServers []Server
-			err = store.db.Where("(AliveAt + INTERVAL '20 seconds') < now()").Find(&deadServers).Error
+			err = store.db.Where("(alive_at + INTERVAL '20 seconds') < now()").Find(&deadServers).Error
 			if err != nil {
 				panic(fmt.Sprintf("could not look for dead servers: %v", err))
 			}

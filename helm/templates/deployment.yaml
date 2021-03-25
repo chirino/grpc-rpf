@@ -33,6 +33,31 @@ spec:
           {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/grpc-rpf
+            - server
+            - --insecure
+            - --store-type=postgresql
+          env:
+            - name: GRPC_RPF_POSTGRESQL_HOST
+              value: grpc-rpf-postgresql
+            - name: GRPC_RPF_POSTGRESQL_PORT
+              value: "5432"
+            - name: GRPC_RPF_POSTGRESQL_SSLMODE
+              value: disable
+            - name: GRPC_RPF_POSTGRESQL_DATABASE
+              value: {{ .Values.postgresql.postgresqlDatabase | quote }}
+            - name: GRPC_RPF_POSTGRESQL_USER
+              value: {{ .Values.postgresql.postgresqlUsername | quote }}
+            - name: GRPC_RPF_POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chart.fullname" . }}-postgresql
+                  key: postgresql-password
+            - name: GRPC_RPF_ADVERTISED_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           ports:
             - name: http
               containerPort: 8080
