@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"github.com/lib/pq"
 	"github.com/segmentio/ksuid"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -15,7 +16,7 @@ import (
 type gorm_store struct {
 	serverId       string
 	serverHostPort string
-	db             *gorm.DB
+	DB             *gorm.DB
 	log            *log.Logger
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
@@ -57,7 +58,7 @@ func (d PostgresConfig) Dialector() gorm.Dialector {
 	return postgres.Open(dsn)
 }
 
-func NewDBStore(dc DatabaseConfig, serverHostPort string) (Store, error) {
+func NewDBStore(dc DatabaseConfig, serverHostPort string) (*gorm_store, error) {
 	db, err := gorm.Open(dc.Dialector())
 	if err != nil {
 		return nil, err
@@ -65,7 +66,7 @@ func NewDBStore(dc DatabaseConfig, serverHostPort string) (Store, error) {
 	return &gorm_store{
 		serverHostPort: serverHostPort,
 		serverId:       ksuid.New().String(),
-		db:             db,
+		DB:             db,
 		log:            log.New(os.Stdout, "store: ", 0),
 		stopChan:       make(chan struct{}),
 	}, nil
@@ -78,7 +79,7 @@ func (store *gorm_store) OnListen(service string, token string, from string) (re
 	var result Result
 
 	// Are they allowed to connect?
-	err = store.db.Raw("SELECT allowed_to_listen @> ? AS allowed FROM services WHERE id = ?", []string{token}, service).
+	err = store.DB.Raw("SELECT allowed_to_listen @> ? AS allowed FROM services WHERE id = ?", pq.StringArray{token}, service).
 		Scan(&result).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -93,7 +94,7 @@ func (store *gorm_store) OnListen(service string, token string, from string) (re
 
 	// Record the binding so that other servers can redirect traffic to us.
 	bindingId := ksuid.New().String()
-	err = store.db.Create(Binding{
+	err = store.DB.Create(&Binding{
 		ID:             bindingId,
 		ServiceID:      service,
 		ServerHostPort: store.serverHostPort,
@@ -105,7 +106,7 @@ func (store *gorm_store) OnListen(service string, token string, from string) (re
 	}
 
 	return "", func() {
-		store.db.Delete(Binding{ID: bindingId})
+		store.DB.Delete(&Binding{ID: bindingId})
 	}, nil
 }
 
@@ -114,7 +115,7 @@ func (store *gorm_store) OnConnect(service string, token string, from string) (r
 		Allowed bool
 	}
 	var result Result
-	err = store.db.Raw("SELECT allowed_to_connect @> ? AS allowed FROM services WHERE id = ?", []string{token}, service).
+	err = store.DB.Raw("SELECT allowed_to_connect @> ? AS allowed FROM services WHERE id = ?", pq.StringArray{token}, service).
 		Scan(&result).Error
 
 	if err != nil {
@@ -130,7 +131,7 @@ func (store *gorm_store) OnConnect(service string, token string, from string) (r
 
 	// Do this server have a binding?
 	var count int64
-	err = store.db.Where(Binding{ServerID: store.serverId, ServiceID: service}).Count(&count).Error
+	err = store.DB.Where(Binding{ServerID: store.serverId, ServiceID: service}).Count(&count).Error
 	if err != nil {
 		return "", nil, err
 	}
@@ -140,20 +141,23 @@ func (store *gorm_store) OnConnect(service string, token string, from string) (r
 
 	// Lets find a server to redirect to:
 	var b Binding
-	err = store.db.Order("created_at desc").Limit(1).First(&b).Error
+	err = store.DB.Order("created_at desc").Limit(1).First(&b).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return "", nil, ServiceNotFound
 		}
 		return "", nil, err
 	}
+	if b.ServerHostPort == "*" {
+		b.ServerHostPort = ""
+	}
 	return b.ServerHostPort, nil, nil
 }
 
 type Service struct {
-	ID               string   `gorm:"primaryKey"`
-	AllowedToListen  []string `gorm:"type:text[]"`
-	AllowedToConnect []string `gorm:"type:text[]"`
+	ID               string         `gorm:"primaryKey"`
+	AllowedToListen  pq.StringArray `gorm:"type:text[]"`
+	AllowedToConnect pq.StringArray `gorm:"type:text[]"`
 	Owner            string
 }
 
@@ -176,14 +180,14 @@ func (store *gorm_store) Stop() {
 	close(store.stopChan)
 	store.wg.Wait()
 
-	store.db.Delete(Server{ID: store.serverId})
-	store.db.Where("server_id=?", store.serverId).Delete(Binding{})
+	store.DB.Delete(&Server{ID: store.serverId})
+	store.DB.Where("server_id=?", store.serverId).Delete(&Binding{})
 }
 
 func (store *gorm_store) Start() error {
 	store.stopChan = make(chan struct{}, 1)
 
-	migrator := store.db.Migrator()
+	migrator := store.DB.Migrator()
 
 	err := migrator.AutoMigrate(&Server{})
 	if err != nil {
@@ -200,7 +204,7 @@ func (store *gorm_store) Start() error {
 		return err
 	}
 
-	err = store.db.Create(&Server{
+	err = store.DB.Create(&Server{
 		ID: store.serverId,
 	}).Error
 	if err != nil {
@@ -222,7 +226,7 @@ func (store *gorm_store) backgroundTasks() {
 			return
 		case <-time.After(10 * time.Second):
 
-			err := store.db.Model(&Server{
+			err := store.DB.Model(&Server{
 				ID: store.serverId,
 			}).Save(map[string]interface{}{
 				"AliveAt": clause.Expr{SQL: "now()"},
@@ -233,15 +237,15 @@ func (store *gorm_store) backgroundTasks() {
 			}
 
 			var deadServers []Server
-			err = store.db.Where("(alive_at + INTERVAL '20 seconds') < now()").Find(&deadServers).Error
+			err = store.DB.Where("(alive_at + INTERVAL '20 seconds') < now()").Find(&deadServers).Error
 			if err != nil {
 				panic(fmt.Sprintf("could not look for dead servers: %v", err))
 			}
 
 			for _, s := range deadServers {
 				// Delete the server record and all it's bindings..
-				store.db.Delete(s)
-				store.db.Where("server_id=?", s.ID).Delete(Binding{})
+				store.DB.Delete(s)
+				store.DB.Where("server_id=?", s.ID).Delete(&Binding{})
 			}
 		}
 	}

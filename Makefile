@@ -12,6 +12,7 @@ POSTGRES_CONTAINER=grpc-rpf
 POSTGRES_DB=grpc-rpf
 POSTGRES_PORT=5432
 POSTGRES_USER=grpc-rpf
+POSTGRES_PASSWORD=password
 
 db/setup:
 	@docker run \
