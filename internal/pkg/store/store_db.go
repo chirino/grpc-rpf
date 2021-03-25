@@ -111,7 +111,6 @@ func (store *gorm_store) OnListen(service string, token string, from string) (re
 }
 
 func (store *gorm_store) OnConnect(service string, token string, from string) (redirect string, close func(), err error) {
-	store.log.Printf("OnConnect: service %s, token %s, from %s", service, token, from)
 
 	type Result struct {
 		Allowed bool
@@ -126,7 +125,6 @@ func (store *gorm_store) OnConnect(service string, token string, from string) (r
 		}
 		return "", nil, err
 	}
-	store.log.Printf("OnConnect: allowed %v", result.Allowed)
 
 	if !result.Allowed {
 		return "", nil, PermissionDenied
@@ -134,7 +132,7 @@ func (store *gorm_store) OnConnect(service string, token string, from string) (r
 
 	// Do this server have a binding?
 	var count int64
-	err = store.DB.Where(Binding{ServerID: store.serverId, ServiceID: service}).Count(&count).Error
+	err = store.DB.Where(&Binding{ServerID: store.serverId, ServiceID: service}).Count(&count).Error
 	if err != nil {
 		return "", nil, err
 	}

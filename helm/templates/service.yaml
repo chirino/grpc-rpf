@@ -9,12 +9,11 @@ metadata:
   labels:
   {{- include "chart.labels" . | nindent 4 }}
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   ports:
     - protocol: TCP
-      port: {{ .Values.service.port }}
+      port: 443
       targetPort: {{ $Values.service.port }}
-
   selector:
   {{- $selectorLabels }}
 
@@ -23,7 +22,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $fullName }}- {{$i}}
+  name: "{{ $fullName }}-{{$i}}"
   labels:
   {{- $labels -}}
   {{- with $Values.ingress.annotations }}
@@ -31,11 +30,11 @@ metadata:
   {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ $Values.service.type }}
+  type: ClusterIP
   ports:
     - protocol: TCP
-      port: {{ $Values.service.port }}
-
+      port: 443
+      targetPort: {{ $Values.service.port }}
   selector:
     statefulset.kubernetes.io/pod-name: "{{ $fullName }}-{{$i}}"
   {{- $selectorLabels }}

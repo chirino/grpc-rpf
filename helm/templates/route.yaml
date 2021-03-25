@@ -26,7 +26,7 @@ spec:
 kind: Route
 apiVersion: route.openshift.io/v1
 metadata:
-  name: {{ $fullName }}- {{$i}}
+  name: "{{ $fullName }}-{{$i}}"
   labels:
   {{- $labels -}}
   {{- with $Values.ingress.annotations }}
@@ -37,7 +37,7 @@ spec:
   host: "{{ $fullName }}-{{$i}}.{{ $Values.ingress.hostname }}"
   to:
     kind: Service
-    name: {{ $fullName }}- {{$i}}
+    name: "{{ $fullName }}-{{$i}}"
   port:
     targetPort: {{ $Values.service.port }}
   tls:
