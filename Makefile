@@ -31,3 +31,21 @@ db/teardown:
 db/sql:
 	@docker exec -u $(shell id -u) -it ${POSTGRES_CONTAINER} /bin/bash -c 'PGPASSWORD=${POSTGRES_PASSWORD} psql -d ${POSTGRES_DB} -U ${POSTGRES_USER}'
 .PHONY: db/login
+
+
+###########################################################################################
+# Kubernetes related targets
+###########################################################################################
+
+kube/setup:
+	helm install grpc-rpf helm
+.PHONY: kube/setup
+
+kube/teardown:
+	helm uninstall grpc-rpf
+	kubectl delete  pvc data-grpc-rpf-postgresql-0
+.PHONY: kube/teardown
+
+kube/sql:
+	@kubectl exec -it grpc-rpf-postgresql-0 -- bash -c "PGPASSWORD=$(shell kubectl get secret --namespace hchirino-code grpc-rpf-postgresql -o jsonpath="{.data.postgresql-password}" | base64 --decode) psql -U grpc-rpf -d grpc-rpf"
+.PHONY: kube/sql

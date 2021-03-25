@@ -53,7 +53,6 @@ func NewServerOptions(config TLSConfig) ([]grpc.ServerOption, error) {
 func newTLSConfig(config TLSConfig) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{},
-		ClientAuth: tls.RequireAndVerifyClientCert,
 	}
 	if config.CertFile != "" && config.KeyFile != "" {
 		certificate, err := tls.LoadX509KeyPair(
@@ -61,7 +60,7 @@ func newTLSConfig(config TLSConfig) (*tls.Config, error) {
 			config.KeyFile,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("could not load certificat key pair")
+			return nil, fmt.Errorf("could not load certificate key pair (%s, %s): %v", config.CertFile, config.KeyFile, err)
 		}
 		tlsConfig.Certificates = []tls.Certificate{certificate}
 	}
@@ -70,11 +69,11 @@ func newTLSConfig(config TLSConfig) (*tls.Config, error) {
 		certPool := x509.NewCertPool()
 		bs, err := ioutil.ReadFile(config.CAFile)
 		if err != nil {
-			return nil, fmt.Errorf("could not load ca certs")
+			return nil, fmt.Errorf("could not load ca certs: %v", err)
 		}
 		ok := certPool.AppendCertsFromPEM(bs)
 		if !ok {
-			return nil, fmt.Errorf("failed to append ca certs")
+			return nil, fmt.Errorf("failed to append ca certs: %v", err)
 		}
 		tlsConfig.RootCAs = certPool
 		tlsConfig.ClientCAs = certPool
