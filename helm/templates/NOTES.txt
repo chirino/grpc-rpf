@@ -12,5 +12,16 @@
 3. SQL to add a service
 
 ```
-    INSERT INTO services (id, allowed_to_listen, allowed_to_connect) VALUES ('myservice', '{"token1"}', '{"token2"}');
+    INSERT INTO services (id, allowed_to_listen, allowed_to_connect) VALUES ('myapp', '{"token1"}', '{"token2"}');
+```
+
+4. Get the CA cert that signed the server certificate:
+```
+	kubectl get secret --namespace {{ .Release.Namespace }} {{ include "chart.fullname" . }} -o jsonpath="{.data['ca\.crt']}" | base64 --decode > ca.crt
+```
+
+5. Export a private service:
+
+```
+grpc-rpf exporter --server {{ .Values.ingress.hostname }}:443 --export myapp=localhost:8080 --access-token token1 --ca-file ca.crt
 ```

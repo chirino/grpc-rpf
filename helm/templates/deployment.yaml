@@ -29,7 +29,7 @@ spec:
       securityContext:
       {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: {{ .Chart.Name }}
+        - name: "n"
           securityContext:
           {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -42,6 +42,8 @@ spec:
             - --crt-file=/etc/grpc-rpf/tls.crt
             - --key-file=/etc/grpc-rpf/tls.key
             - --store-type=postgresql
+            - --advertised-domain={{ .Values.ingress.hostname }}
+            - --advertised-port=443
           env:
             - name: GRPC_RPF_POSTGRESQL_HOST
               value: grpc-rpf-postgresql
@@ -58,10 +60,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "chart.fullname" . }}-postgresql
                   key: postgresql-password
-            - name: GRPC_RPF_ADVERTISED_ADDRESS
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
+          {{/*            - name: GRPC_RPF_ADVERTISED_ADDRESS*/}}
+          {{/*              valueFrom:*/}}
+          {{/*                fieldRef:*/}}
+          {{/*                  fieldPath: status.podIP*/}}
           ports:
             - name: grpc
               containerPort: 8443

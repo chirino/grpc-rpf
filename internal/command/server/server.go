@@ -79,22 +79,8 @@ func commandRun(_ *cobra.Command, _ []string) error {
 	if storeType != "" && len(services) != 0 {
 		return fmt.Errorf("option --service and --store-type are exclusive, use only one")
 	}
-	switch storeType {
-	case "":
-	case "dir":
-		if servicesDir == "" {
-			return fmt.Errorf("when --store-type=dir is used, you must also specify the --service-dir option")
-		}
-	case "postgresql":
-		if advertisedAddress == "" {
-			return fmt.Errorf("when --store-type=postgresql is used, you must also specify the --advertised-address option")
-		}
-	default:
-		return fmt.Errorf("invalid value for --store-type option")
-	}
 
 	importerListener, listenErr := net.Listen("tcp", listen)
-
 	if advertisedAddress == "" && advertisedDomain != "" {
 		s, err := os.Hostname()
 		if err == nil {
@@ -129,6 +115,20 @@ func commandRun(_ *cobra.Command, _ []string) error {
 		if host == "" {
 			return fmt.Errorf("invalid --advertised-address value: host must be specified")
 		}
+	}
+
+	switch storeType {
+	case "":
+	case "dir":
+		if servicesDir == "" {
+			return fmt.Errorf("when --store-type=dir is used, you must also specify the --service-dir option")
+		}
+	case "postgresql":
+		if advertisedAddress == "" {
+			return fmt.Errorf("when --store-type=postgresql is used, you must also specify the --advertised-address option")
+		}
+	default:
+		return fmt.Errorf("invalid value for --store-type option")
 	}
 
 	if advertisedAddress != "" {

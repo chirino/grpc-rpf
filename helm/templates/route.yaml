@@ -1,16 +1,18 @@
 {{- $fullName := include "chart.fullname" . -}}
+  {{- $Values := .Values -}}
+  {{- $labels := include "chart.labels" . | nindent 4 -}}
 kind: Route
 apiVersion: route.openshift.io/v1
 metadata:
   name: {{ $fullName }}
   labels:
-  {{- include "chart.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- $labels -}}
+  {{- with $Values.ingress.annotations }}
   annotations:
   {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  host: "{{ .Values.ingress.hostname }}"
+  host: "{{ $Values.ingress.hostname }}"
   to:
     kind: Service
     name: {{ $fullName }}
@@ -21,13 +23,29 @@ spec:
     termination: passthrough
     insecureEdgeTerminationPolicy: None
   wildcardPolicy: None
-status:
-  ingress:
-    - host: grpc-rpf-hchirino-code.apps.sandbox.x8i5.p1.openshiftapps.com
-      routerName: default
-      conditions:
-        - type: Admitted
-          status: 'True'
-          lastTransitionTime: '2021-03-25T14:45:00Z'
-      wildcardPolicy: None
-      routerCanonicalHostname: apps.sandbox.x8i5.p1.openshiftapps.com
+
+  {{range $i, $e := until (int .Values.autoscaling.maxReplicas)}}
+---
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: {{ $fullName }}- {{$i}}
+  labels:
+  {{- $labels -}}
+  {{- with $Values.ingress.annotations }}
+  annotations:
+  {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  host: "{{ $fullName }}-{{$i}}.{{ $Values.ingress.hostname }}"
+  to:
+    kind: Service
+    name: {{ $fullName }}- {{$i}}
+    weight: 100
+  port:
+    targetPort: 8443
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: None
+  wildcardPolicy: None
+  {{end}}

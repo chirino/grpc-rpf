@@ -162,9 +162,10 @@ type Service struct {
 }
 
 type Server struct {
-	ID        string    `gorm:"primaryKey"`
-	CreatedAt time.Time `gorm:"default:now()"`
-	AliveAt   time.Time `gorm:"default:now()"`
+	ID             string `gorm:"primaryKey"`
+	ServerHostPort string
+	CreatedAt      time.Time `gorm:"default:now()"`
+	AliveAt        time.Time `gorm:"default:now()"`
 }
 
 type Binding struct {
@@ -205,7 +206,8 @@ func (store *gorm_store) Start() error {
 	}
 
 	err = store.DB.Create(&Server{
-		ID: store.serverId,
+		ID:             store.serverId,
+		ServerHostPort: store.serverHostPort,
 	}).Error
 	if err != nil {
 		return err

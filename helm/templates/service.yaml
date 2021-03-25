@@ -1,12 +1,13 @@
+{{- $fullName := include "chart.fullname" . -}}
+  {{- $Values := .Values -}}
+  {{- $labels := include "chart.labels" . | nindent 4 -}}
+  {{- $selectorLabels := include "chart.selectorLabels" . | nindent 4 -}}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "chart.fullname" . }}
+  name: {{ $fullName }}
   labels:
   {{- include "chart.labels" . | nindent 4 }}
-  annotations:
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -15,4 +16,28 @@ spec:
       targetPort: 8443
 
   selector:
-  {{- include "chart.selectorLabels" . | nindent 4 }}
+  {{- $selectorLabels }}
+
+  {{range $i, $e := until (int .Values.autoscaling.maxReplicas)}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}- {{$i}}
+  labels:
+  {{- $labels -}}
+  {{- with $Values.ingress.annotations }}
+  annotations:
+  {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $Values.service.type }}
+  ports:
+    - protocol: TCP
+      port: {{ $Values.service.port }}
+      targetPort: 8443
+
+  selector:
+    statefulset.kubernetes.io/pod-name: "{{ $fullName }}-{{$i}}"
+  {{- $selectorLabels }}
+  {{end}}
