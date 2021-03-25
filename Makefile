@@ -38,7 +38,8 @@ db/sql:
 ###########################################################################################
 
 kube/setup:
-	helm install grpc-rpf helm
+	helm install --set image.pullPolicy=Always --set ingress.hostname=grpc-rpf-hchirino-code.apps.sandbox.x8i5.p1.openshiftapps.com grpc-rpf helm
+	kubectl get secret grpc-rpf -o jsonpath="{.data['ca\.crt']}" | base64 --decode > ca.crt
 .PHONY: kube/setup
 
 kube/teardown:
@@ -47,5 +48,9 @@ kube/teardown:
 .PHONY: kube/teardown
 
 kube/sql:
-	@kubectl exec -it grpc-rpf-postgresql-0 -- bash -c "PGPASSWORD=$(shell kubectl get secret --namespace hchirino-code grpc-rpf-postgresql -o jsonpath="{.data.postgresql-password}" | base64 --decode) psql -U grpc-rpf -d grpc-rpf"
+	@kubectl exec -it grpc-rpf-postgresql-0 -- bash -c "PGPASSWORD=$(shell kubectl get secret grpc-rpf-postgresql -o jsonpath="{.data.postgresql-password}" | base64 --decode) psql -U grpc-rpf -d grpc-rpf"
 .PHONY: kube/sql
+
+kube/shell:
+	@kubectl exec -it grpc-rpf-postgresql-0 -- bash
+.PHONY: kube/shell

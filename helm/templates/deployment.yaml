@@ -1,10 +1,11 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ include "chart.fullname" . }}
   labels:
   {{- include "chart.labels" . | nindent 4 }}
 spec:
+  serviceName: {{ include "chart.fullname" . }}
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
@@ -36,7 +37,10 @@ spec:
           command:
             - /usr/local/bin/grpc-rpf
             - server
-            - --insecure
+            - "--listen=:8443"
+            - --ca-file=/etc/grpc-rpf/ca.crt
+            - --crt-file=/etc/grpc-rpf/tls.crt
+            - --key-file=/etc/grpc-rpf/tls.key
             - --store-type=postgresql
           env:
             - name: GRPC_RPF_POSTGRESQL_HOST
@@ -59,8 +63,8 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
           ports:
-            - name: http
-              containerPort: 8080
+            - name: grpc
+              containerPort: 8443
               protocol: TCP
           {{/*          livenessProbe:*/}}
           {{/*            httpGet:*/}}
@@ -70,8 +74,17 @@ spec:
           {{/*            httpGet:*/}}
           {{/*              path: /*/}}
           {{/*              port: http*/}}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/grpc-rpf
+              readOnly: true
           resources:
       {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "chart.fullname" . }}
+
       {{- with .Values.nodeSelector }}
       nodeSelector:
       {{- toYaml . | nindent 8 }}
@@ -80,7 +93,8 @@ spec:
       affinity:
       {{- toYaml . | nindent 8 }}
       {{- end }}
+
       {{- with .Values.tolerations }}
       tolerations:
-      {{- toYaml . | nindent 8 }}
+  {{- toYaml . | nindent 8 }}
   {{- end }}

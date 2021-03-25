@@ -59,8 +59,8 @@ func init() {
 
 	Command.Flags().StringVar(&advertisedAddress, "advertised-address", advertisedAddress, "the host:port that clients can connect to")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "private key file")
-	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.pem", "certificate authority file")
-	Command.Flags().StringVar(&config.CertFile, "crt-file", "tls.pem", "public certificate file")
+	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.crt", "certificate authority file")
+	Command.Flags().StringVar(&config.CertFile, "crt-file", "tls.crt", "public certificate file")
 	Command.Flags().StringVar(&config.KeyFile, "key-file", "tls.key", "private key file")
 	app.Command.AddCommand(Command)
 }

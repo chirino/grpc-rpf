@@ -21,3 +21,6 @@
 
 # build files.
 /dist/
+
+# temp files.
+ca.crt

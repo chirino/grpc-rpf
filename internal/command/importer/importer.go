@@ -40,9 +40,9 @@ func init() {
 	Command.Flags().StringVar(&config.AccessToken, "access-token", config.AccessToken, "access token used to identify the client")
 	Command.Flags().StringVar(&importsDir, "imports-dir", importsDir, "watch a directory holding import configurations")
 	Command.Flags().BoolVar(&config.Insecure, "insecure", false, "connect to the server using an insecure TLS connection.")
-	Command.Flags().StringVar(&config.CAFile, "ca-file", "ca.pem", "certificate authority file")
-	Command.Flags().StringVar(&config.CertFile, "crt-file", "tls.pem", "public certificate file")
-	Command.Flags().StringVar(&config.KeyFile, "key-file", "tls.key", "private key file")
+	Command.Flags().StringVar(&config.CAFile, "ca-file", "", "certificate authority file")
+	Command.Flags().StringVar(&config.CertFile, "crt-file", "", "public certificate file")
+	Command.Flags().StringVar(&config.KeyFile, "key-file", "", "private key file")
 	app.Command.AddCommand(Command)
 }
 
