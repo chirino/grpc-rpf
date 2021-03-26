@@ -97,8 +97,10 @@ that database and a service record.1
 example:
 
 ```shell
-$ export PGPASSWORD=$(kubectl get secret --namespace hchirino-code grpc-rpf-postgresql -o jsonpath="{.data.postgresql-password}" | base64 --decode)
-$ kubectl exec -it grpc-rpf-postgresql-0 -- bash -c "PGPASSWORD=${PGPASSWORD} psql -U grpc-rpf -d grpc-rpf"
+$ export PGPASSWORD=$(kubectl get secret --namespace hchirino-code grpc-rpf-postgresql \
+      -o jsonpath="{.data.postgresql-password}" | base64 --decode)
+$ kubectl exec -it grpc-rpf-postgresql-0 -- bash -c "PGPASSWORD=${PGPASSWORD} \
+      psql -U grpc-rpf -d grpc-rpf"
 ```
 
 Then you can run the following SQL to add a service named "myapp" that allows exporters with a token of "token1" and
@@ -126,7 +128,8 @@ Running the importer will bind ports for each `--import` option that you configu
 making the 'myapp' and 'other' service available for connections on ports 8181 and 8182.
 
 ```shell
-$ grpc-rpf importer --access-token token2 --ca-file ca.crt --server rpf.example.com:443 --import myapp=:8181 --import other=:8182
+$ grpc-rpf importer --access-token token2 --ca-file ca.crt --server rpf.example.com:443 \
+    --import myapp=:8181 --import other=:8182
 ```
 
 ### The `exporter`
