@@ -1,6 +1,6 @@
 # `grpc-rpf` : GRPC Reverse Port Forward
 
-![Build Status](https://github.com/chirino/grpc-rpf/actions/workflows/build.yml/badge.svg?branch=main)
+[![Build Status](https://github.com/chirino/grpc-rpf/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/chirino/grpc-rpf/actions/workflows/build.yml)
 
 If you have a private service like a on premise database, that you need to make available in the cloud  
 you can use `grpc-rpf` to expose it in that network without having setup a VPN or poke holes in the firewall.
